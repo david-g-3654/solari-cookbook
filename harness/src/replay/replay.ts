@@ -25,6 +25,7 @@ import type { SolariClient } from "@solarisdk/sdk"
 import { FaultChain } from "../faults/index.js"
 import { FixtureHost } from "../fixture/host.js"
 import { StepExecutor, captureFinalState } from "../run/executor.js"
+import { makeRecoveryHandler } from "../run/recovery.js"
 import { scoreAll, statusOf } from "../run/score.js"
 import { taskById } from "../tasks/index.js"
 import type { ReplayDiff, ReplayResult, RunResult, Step, TraceStep } from "../types.js"
@@ -94,7 +95,17 @@ export async function replayRun(opts: ReplayOptions): Promise<ReplayResult> {
       if (f === page.mainFrame()) navigations.push(f.url())
     })
 
-    const executor = new StepExecutor(page, fork.baseUrl)
+    // Recover exactly as the original run did — including whether recovery
+    // was active at all, so a `--no-recovery` run replays as a `--no-recovery`
+    // run rather than mysteriously succeeding.
+    let executor!: StepExecutor
+    const onInterstitial = makeRecoveryHandler(
+      page,
+      () => executor,
+      run.recoveryEnabled ? task.recovery : undefined,
+      log,
+    )
+    executor = new StepExecutor(page, fork.baseUrl, { onInterstitial })
     let index = 0
     for (const original of run.trace) {
       if (isAgentNote(original.step)) continue

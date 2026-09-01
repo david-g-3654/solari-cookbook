@@ -151,6 +151,8 @@ export interface RunResult {
   fixtureSnapshotId?: string
   baseUrl: string
   faults: FaultSpec[]
+  /** Whether the task's interstitial recovery was active (`--no-recovery` off). */
+  recoveryEnabled: boolean
   trace: TraceStep[]
   observation: Observation
   answer: Record<string, unknown>

@@ -23,32 +23,11 @@ export const scriptedAdapter: Adapter = {
       ctx.emit(await ctx.executor.trace(step, index++, answer))
     }
 
-    for (const step of ctx.task.steps) {
-      await exec(step)
-      // An injected interstitial can land after any navigation. A real agent
-      // notices it and deals with it; this one checks for the marker and runs
-      // the task's recovery script. `--no-recovery` removes that, which is how
-      // you prove a red cell is a genuine robustness regression.
-      await maybeRecover(ctx, exec)
-    }
+    // Interstitial recovery is not handled here: an injected wall can land
+    // inside a compound step like `paginate`, so the executor clears it after
+    // every navigation it performs. See run/recovery.ts.
+    for (const step of ctx.task.steps) await exec(step)
 
     return answer
   },
-}
-
-async function maybeRecover(
-  ctx: AdapterRunContext,
-  exec: (s: Step) => Promise<void>,
-): Promise<void> {
-  const recovery = ctx.task.recovery
-  if (!recovery) return
-  const hit = await ctx.page
-    .locator(recovery.detect)
-    .first()
-    .isVisible({ timeout: 500 })
-    .catch(() => false)
-  if (!hit) return
-
-  ctx.log(`hit ${recovery.detect}, running recovery`)
-  for (const step of recovery.steps) await exec(step)
 }

@@ -14,6 +14,7 @@ import { Solari } from "@solarisdk/browser"
 import type { BrowserContext, Page } from "patchright-core"
 import { FaultChain } from "../faults/index.js"
 import { StepExecutor, captureFinalState } from "./executor.js"
+import { makeRecoveryHandler } from "./recovery.js"
 import { scoreAll, statusOf } from "./score.js"
 import type { Adapter } from "../adapters/index.js"
 import type {
@@ -110,7 +111,12 @@ async function runOne(
     const page = await context.newPage()
     wireObservers(page, observation)
 
-    const executor = new StepExecutor(page, opts.baseUrl)
+    // The handler needs the executor and the executor needs the handler, so
+    // the handler takes a lazy getter rather than the instance.
+    let executor!: StepExecutor
+    const onInterstitial = makeRecoveryHandler(page, () => executor, task.recovery, log)
+    executor = new StepExecutor(page, opts.baseUrl, { onInterstitial })
+
     answer = await opts.adapter.run({
       page,
       baseUrl: opts.baseUrl,
@@ -161,6 +167,7 @@ async function runOne(
     ...(opts.fixtureSnapshotId ? { fixtureSnapshotId: opts.fixtureSnapshotId } : {}),
     baseUrl: opts.baseUrl,
     faults: opts.faults,
+    recoveryEnabled: task.recovery !== undefined,
     trace,
     observation,
     answer,

@@ -8,6 +8,7 @@
  */
 import type { Page } from "patchright-core"
 import type { Step, TraceStep } from "../types.js"
+import type { InterstitialHandler } from "./recovery.js"
 
 const DEFAULT_TIMEOUT_MS = 15_000
 
@@ -20,12 +21,34 @@ function textOf(s: string): string {
   return s.replace(/\s+/g, " ").trim()
 }
 
+export interface ExecutorOptions {
+  timeoutMs?: number
+  /**
+   * Called after every navigation this executor performs, including ones
+   * inside compound steps. This is where an injected interstitial gets
+   * cleared — see recovery.ts for why it lives here and not between steps.
+   */
+  onInterstitial?: InterstitialHandler
+}
+
 export class StepExecutor {
+  private readonly timeoutMs: number
+  private readonly onInterstitial: InterstitialHandler | undefined
+
   constructor(
     private readonly page: Page,
     private readonly baseUrl: string,
-    private readonly timeoutMs: number = DEFAULT_TIMEOUT_MS,
-  ) {}
+    opts: ExecutorOptions = {},
+  ) {
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
+    this.onInterstitial = opts.onInterstitial
+  }
+
+  /** Let the page settle after a navigation, then clear any interstitial. */
+  private async settle(timeout: number): Promise<void> {
+    await this.page.waitForLoadState("domcontentloaded", { timeout }).catch(() => {})
+    if (this.onInterstitial) await this.onInterstitial()
+  }
 
   /**
    * Run one step, writing any extraction into `answer`.
@@ -41,6 +64,7 @@ export class StepExecutor {
           waitUntil: "domcontentloaded",
           timeout: t,
         })
+        await this.settle(t)
         return undefined
       }
 
@@ -49,7 +73,7 @@ export class StepExecutor {
         // let the page settle — `domcontentloaded` resolves immediately when
         // no navigation happened, so this costs nothing in the common case.
         await page.locator(step.selector).first().click({ timeout: t })
-        await page.waitForLoadState("domcontentloaded", { timeout: t }).catch(() => {})
+        await this.settle(t)
         return undefined
       }
 
@@ -91,7 +115,8 @@ export class StepExecutor {
           const next = page.locator(step.nextSelector).first()
           if ((await next.count()) === 0) break
           await next.click({ timeout: t })
-          await page.waitForLoadState("domcontentloaded", { timeout: t }).catch(() => {})
+          // A wall served mid-pagination is cleared here, not three steps later.
+          await this.settle(t)
         }
         answer[step.as] = collected
         return collected

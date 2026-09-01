@@ -172,6 +172,9 @@ function runRow(run: RunResult, replay?: ReplayResult): string {
     <tr><td>adapter</td><td class="dim">${esc(run.adapter)}</td></tr>
     <tr><td>seed</td><td class="dim">${run.seed}</td></tr>
     <tr><td>faults</td><td class="dim">${esc(faults)}</td></tr>
+    <tr><td>recovery</td><td class="dim">${
+      run.recoveryEnabled ? "enabled" : "stripped (--no-recovery)"
+    }</td></tr>
     <tr><td>session</td><td class="dim">${esc(run.sessionId ?? "—")}</td></tr>
     <tr><td>recording</td><td class="dim">${
       run.replayBytes ? `${run.replayBytes} bytes of rrweb NDJSON` : "not uploaded"

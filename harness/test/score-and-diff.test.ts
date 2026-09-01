@@ -60,7 +60,7 @@ const step = (i: number, url: string, ok = true): TraceStep => ({
 const baseRun = (): RunResult => ({
   runId: "r1", taskId: "smoke-read", adapter: "scripted", status: "pass", seed: 1,
   startedAt: "2026-09-01T00:00:00Z", durationMs: 100, baseUrl: "https://a.test",
-  faults: [], answer: { tagline: "Parts for boards." }, assertions: [],
+  faults: [], recoveryEnabled: true, answer: { tagline: "Parts for boards." }, assertions: [],
   trace: [step(0, "https://a.test/index.html")],
   observation: {
     navigations: ["https://a.test/index.html"],
