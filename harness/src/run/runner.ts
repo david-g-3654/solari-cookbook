@@ -10,6 +10,7 @@
  */
 import { Solari } from "@solarisdk/browser"
 import { executeTask } from "./execute-task.js"
+import { retryOnConcurrencyLimit } from "../retry.js"
 import type { TaskExecutionOutput } from "./execute-task.js"
 import type { Adapter } from "../adapters/index.js"
 import type { FaultSpec, RunResult, Suite, Task } from "../types.js"
@@ -89,7 +90,13 @@ async function runOne(
   let sessionId: string | undefined
   let result: TaskExecutionOutput
   try {
-    const browser = await solari.launch({ recording: true })
+    // `--parallel` is a request, not a requirement: if the plan's cap is
+    // lower, wait for a slot rather than losing the run to a 429.
+    const browser = await retryOnConcurrencyLimit(
+      "session",
+      () => solari.launch({ recording: true }),
+      { log },
+    )
     sessionId = browser.id
     try {
       const context = browser.contexts()[0] ?? (await browser.newContext())

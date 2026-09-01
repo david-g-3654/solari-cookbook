@@ -15,6 +15,8 @@
  */
 import type { SolariClient } from "@solarisdk/sdk"
 import { FIXTURE_PORT, FIXTURE_ROOT } from "../config.js"
+import { retryOnConcurrencyLimit } from "../retry.js"
+import { withPath } from "../url.js"
 import { fixtureFiles } from "./site.js"
 
 /** Minimum surface we need from a sandbox handle. Keeps this unit testable. */
@@ -36,11 +38,14 @@ export class FixtureHost {
 
   /** Boot a fresh fixture host from the golden template. */
   static async start(client: SolariClient, log: (m: string) => void): Promise<FixtureHost> {
-    const sandbox = await client.sandboxes.create({
-      template: "base",
-      timeoutMs: BOOT_TIMEOUT_MS,
-      metadata: { app: "splitflap", role: "fixture" },
-    })
+    const sandbox = await retryOnConcurrencyLimit("fixture sandbox", () =>
+      client.sandboxes.create({
+        template: "base",
+        timeoutMs: BOOT_TIMEOUT_MS,
+        metadata: { app: "splitflap", role: "fixture" },
+      }),
+      { log },
+    )
     log(`sandbox ${sandbox.sandboxId} booting`)
     await sandbox.connect()
 
@@ -67,11 +72,14 @@ export class FixtureHost {
     snapshotId: string,
     log: (m: string) => void,
   ): Promise<FixtureHost> {
-    const sandbox = await client.sandboxes.create({
-      fromSnapshot: snapshotId,
-      timeoutMs: BOOT_TIMEOUT_MS,
-      metadata: { app: "splitflap", role: "fixture-fork", from: snapshotId },
-    })
+    const sandbox = await retryOnConcurrencyLimit("fork", () =>
+      client.sandboxes.create({
+        fromSnapshot: snapshotId,
+        timeoutMs: BOOT_TIMEOUT_MS,
+        metadata: { app: "splitflap", role: "fixture-fork" },
+      }),
+      { log },
+    )
     log(`forked ${sandbox.sandboxId} from ${snapshotId}`)
     await sandbox.connect()
 
@@ -96,7 +104,7 @@ export class FixtureHost {
     for (const [name, body] of Object.entries(files)) {
       await this.sandbox.files.write(`${FIXTURE_ROOT}/_dash/${name}`, body)
     }
-    return `${this.baseUrl}/_dash/index.html`
+    return withPath(this.baseUrl, "/_dash/index.html")
   }
 
   /**
@@ -146,14 +154,21 @@ async function startServer(sandbox: Sandbox): Promise<void> {
   })
 }
 
+/**
+ * The preview URL arrives with an access token in its query string, and the
+ * gateway answers 401 without it — so keep the URL whole and build paths onto
+ * it with `withPath`, never by concatenation.
+ */
 async function resolveUrl(sandbox: Sandbox): Promise<string> {
   const { url } = await sandbox.previewUrl(FIXTURE_PORT)
-  return url.replace(/\/+$/, "")
+  return url
 }
 
 async function isHealthy(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/index.html`, { signal: AbortSignal.timeout(5_000) })
+    const res = await fetch(withPath(baseUrl, "/index.html"), {
+      signal: AbortSignal.timeout(5_000),
+    })
     return res.ok
   } catch {
     return false

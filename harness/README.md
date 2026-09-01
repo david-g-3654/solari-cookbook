@@ -149,6 +149,11 @@ suites                     list stored suites
 
 `run` exits non-zero if any task failed, so it drops into CI as-is.
 
+`--parallel` is a request, not a requirement: every plan caps concurrent
+sessions, and a suite that asks for more waits for a slot rather than losing
+runs to 429s. If an interrupted suite leaves a sandbox holding one, `clean`
+frees it.
+
 ## How it uses Solari
 
 | Primitive | Used for |
@@ -174,50 +179,55 @@ site where it bites:
 
 ## Status
 
-**Verified.** Everything except the Solari API itself runs green:
+**Verified live on Solari.** A full suite, a fork-and-replay, and the published
+dashboard have all run against the real API:
 
-- `npm test` — 15 unit tests, no network, no browser. The fault state machine
-  (counters, one-shot login wall, seeded-jitter reproducibility, short-circuit
-  ordering), the scorer, and the replay differ.
-- `npm run test:integration` — 12 tests driving the **real** harness code
-  through a **real** browser against a **real** HTTP server. All five golden
-  tasks pass clean; the login wall is served exactly once and recovered from
-  mid-pagination without losing an item; the same wall with `--no-recovery`
-  fails as it should; an injected 503 fails the run; and two runs at the same
-  seed produce byte-identical traces, answers and fault streams.
-
-That last one is the local half of the replay claim. It uses the locally
-installed Chrome (`channel: "chrome"`), so it needs no browser download, and
-skips itself cleanly if Chrome is absent.
-
-**Not yet verified: the live Solari API.** The Solari layer is written against
-the SDK's actual typed surface (`launch`, `recording`, `downloadReplay`,
-`sandboxes.create`, `snapshot`, `create({ fromSnapshot })`, `previewUrl`), and
-`executeTask` — the part the integration tests exercise — is the same code the
-cloud runner drives. But no end-to-end run against Solari has happened yet.
-
-To do that first run:
-
-```bash
-cp .env.example .env      # paste your slr_live_ key
-npm run splitflap -- run --faults latency,loginWall
-npm run splitflap -- replay <runId-from-the-summary>
+```
+5/5 tasks passed in 19.2s
+DETERMINISTIC — replay matched the original on every compared field
 ```
 
-Two things to watch, both flagged in the code rather than assumed:
+- **Parallel cloud browsers** — 5 tasks, `--parallel 5`, on a free plan whose
+  cap is 3 concurrent sessions. The suite self-throttled and all five passed.
+- **Session recording** — rrweb NDJSON downloaded for every run (5–31 KB).
+- **Snapshot / fork** — replay forked the fixture snapshot and the VM **resumed
+  with its HTTP server still running**, no restart needed.
+- **Replay determinism** — the login wall fired at the same navigation, was
+  recovered from, and every compared field matched. As a negative control, a
+  deliberately corrupted stored answer was correctly reported as a divergence
+  on that field alone.
+- **Dashboard** — HTTP 200 on its `*.preview.getsolari.com` URL, with the
+  replay verdict and fork provenance rendered.
 
-1. **Does a forked VM resume with its HTTP server running?** `fork()`
-   health-checks and restarts it either way, and the dashboard reports which
-   happened — so the answer shows up rather than hiding.
-2. **Do context-level routes reach pages an adapter opens over CDP?** Faults
-   are installed on the browser context precisely so Stagehand's and
-   Browser-Use's own pages inherit them. Confirmed for the `scripted` adapter;
-   needs confirming for the other two.
+Plus, offline: `npm test` (18 unit tests) and `npm run test:integration`
+(12 tests driving the real harness through a real browser).
+
+**Not yet verified: the two LLM adapters**, which need a model key. Both are
+written against the frameworks' real APIs, but neither has been run. The open
+question there is whether context-level routes reach pages Stagehand and
+Browser-Use open over CDP — faults are installed on the browser context
+precisely so they should, and it holds for the `scripted` adapter, but it needs
+confirming.
+
+## What the live run taught us
+
+Two bugs only a real run could surface, both now fixed and regression-tested:
+
+**Preview URLs carry an access token in their query string.** Building a target
+by concatenation (`base + "/catalog.html"`) puts the path *inside* the query,
+leaving `pathname` as `/`. Solari's gateway is lenient enough to route it
+anyway — so an entire suite passed while every `goto` was nominally pointed at
+the site root. Paths are now set properly, with the token preserved.
+
+**Replay cried wolf on its first run.** The token is per-sandbox, so a fork
+always carries a different one, and comparing raw query strings reported a
+divergence on every single replay. Normalisation now drops `pt_token` and keeps
+everything else — `sf_auth=1` and submitted form fields are real signal.
 
 ## Tests
 
 ```bash
-npm test              # 15 unit tests — no network, no browser
+npm test              # 18 unit tests — no network, no browser
 npm run test:integration   # 12 tests — real browser, real server, ~40s
 npm run test:all
 ```

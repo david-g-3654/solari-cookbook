@@ -27,6 +27,7 @@ import { FixtureHost } from "../fixture/host.js"
 import { StepExecutor, captureFinalState } from "../run/executor.js"
 import { makeRecoveryHandler } from "../run/recovery.js"
 import { scoreAll, statusOf } from "../run/score.js"
+import { retryOnConcurrencyLimit } from "../retry.js"
 import { taskById } from "../tasks/index.js"
 import type { ReplayDiff, ReplayResult, RunResult, Step, TraceStep } from "../types.js"
 
@@ -44,15 +45,32 @@ function isAgentNote(step: Step): boolean {
   return step.do === "waitFor" && step.selector.startsWith("agent:")
 }
 
-/** Compare paths, not hosts — a fork always has a different preview host. */
-function pathOf(url: string): string {
+/**
+ * Normalise a URL for comparison.
+ *
+ * Two things differ between a run and its replay by construction, and neither
+ * is a divergence:
+ *   - the host, because a fork gets its own preview subdomain;
+ *   - `pt_token`, the per-sandbox access token the preview URL carries.
+ *
+ * Everything else in the query IS meaningful and stays: `sf_auth=1` is how the
+ * login wall records that it was cleared, and the account form submits its
+ * fields as a GET. Dropping the whole query string would hide real
+ * differences; keeping the token would report a divergence on every single
+ * replay, which is worse than useless.
+ */
+export function pathOf(url: string): string {
   try {
     const u = new URL(url)
+    u.searchParams.delete(PREVIEW_TOKEN_PARAM)
     return u.pathname + u.search
   } catch {
     return url
   }
 }
+
+/** Query parameter Solari's preview URLs carry their access token in. */
+const PREVIEW_TOKEN_PARAM = "pt_token"
 
 export async function replayRun(opts: ReplayOptions): Promise<ReplayResult> {
   const { run, log } = opts
@@ -78,7 +96,7 @@ export async function replayRun(opts: ReplayOptions): Promise<ReplayResult> {
   // Same faults, same seed. Any difference now is a real difference.
   const chain = new FaultChain({ faults: run.faults, seed: run.seed })
 
-  const browser = await solari.launch()
+  const browser = await retryOnConcurrencyLimit("session", () => solari.launch(), { log })
   try {
     const context = browser.contexts()[0] ?? (await browser.newContext())
     if (chain.faultCount > 0) {

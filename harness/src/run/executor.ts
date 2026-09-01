@@ -9,13 +9,9 @@
 import type { Page } from "patchright-core"
 import type { Step, TraceStep } from "../types.js"
 import type { InterstitialHandler } from "./recovery.js"
+import { withPath } from "../url.js"
 
 const DEFAULT_TIMEOUT_MS = 15_000
-
-/** Absolute URL for a fixture path, tolerating a trailing slash on the base. */
-export function resolvePath(baseUrl: string, path: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`
-}
 
 function textOf(s: string): string {
   return s.replace(/\s+/g, " ").trim()
@@ -60,7 +56,7 @@ export class StepExecutor {
 
     switch (step.do) {
       case "goto": {
-        await page.goto(resolvePath(this.baseUrl, step.path), {
+        await page.goto(withPath(this.baseUrl, step.path), {
           waitUntil: "domcontentloaded",
           timeout: t,
         })

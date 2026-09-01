@@ -75,6 +75,7 @@ const USAGE = `splitflap — browser-agent eval & replay harness on Solari
   replay <runId> [--keep-fork]
                              fork the fixture snapshot and re-run that trace
   serve [suiteId]            re-publish a stored suite's dashboard
+  clean                      kill leftover splitflap sandboxes (frees plan slots)
   tasks                      list the golden tasks
   suites                     list stored suites
 `
@@ -191,6 +192,29 @@ async function cmdServe(args: Args): Promise<number> {
   return 0
 }
 
+/**
+ * Every plan caps concurrent sessions (3 on free), and a sandbox left running
+ * by an interrupted suite keeps holding one. This is the "why can nothing
+ * start?" escape hatch.
+ */
+async function cmdClean(): Promise<number> {
+  const client = new SolariClient({ apiKey: requireApiKey() })
+  const { sandboxes } = await client.sandboxes.list({ limit: 100 })
+  const ours = sandboxes.filter(
+    (s) => s.metadata?.app === "splitflap" && s.state !== "gone",
+  )
+  if (ours.length === 0) {
+    log("no splitflap sandboxes running")
+    return 0
+  }
+  for (const s of ours) {
+    await client.sandboxes.kill(s.sandboxId).catch((e: Error) => log(`  ${e.message}`))
+    log(`killed ${s.metadata.role ?? "sandbox"} (${s.state})`)
+  }
+  log(`\nfreed ${ours.length} slot(s)`)
+  return 0
+}
+
 function cmdTasks(): number {
   for (const t of TASKS) {
     console.log(`${t.id.padEnd(18)} ${t.title}`)
@@ -263,6 +287,7 @@ async function main(): Promise<number> {
     case "run": return cmdRun(args)
     case "replay": return cmdReplay(args)
     case "serve": return cmdServe(args)
+    case "clean": return cmdClean()
     case "tasks": return cmdTasks()
     case "suites": return cmdSuites()
     default:

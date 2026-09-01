@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { scoreAll, statusOf } from "../src/run/score.js"
-import { diffAgainstOriginal } from "../src/replay/replay.js"
+import { diffAgainstOriginal, pathOf } from "../src/replay/replay.js"
 import type { RunResult, TraceStep } from "../src/types.js"
 
 const state = (over: Partial<Parameters<typeof scoreAll>[1]> = {}) => ({
@@ -120,4 +120,28 @@ test("agent-note pseudo-steps are excluded from the step diff", () => {
     faultKinds: ["latency:delayed 120ms"],
   })
   assert.deepEqual(diffs, [])
+})
+
+// ------------------------------------------------- preview URL normalisation
+
+test("the per-sandbox preview token is not a divergence", () => {
+  const a = "https://aaa-3000.preview.getsolari.com/catalog.html?pt_token=TOKEN_A"
+  const b = "https://bbb-3000.preview.getsolari.com/catalog.html?pt_token=TOKEN_B"
+  assert.equal(pathOf(a), pathOf(b), "host and token both vary by construction")
+  assert.equal(pathOf(a), "/catalog.html")
+})
+
+test("meaningful query params survive normalisation", () => {
+  const cleared = pathOf("https://h.test/catalog.html?pt_token=X&sf_auth=1")
+  assert.equal(cleared, "/catalog.html?sf_auth=1", "sf_auth records that the wall was cleared")
+
+  const submitted = pathOf("https://h.test/account-ok.html?username=demo&password=hunter2&pt_token=X")
+  assert.equal(submitted, "/account-ok.html?username=demo&password=hunter2")
+})
+
+test("a genuinely different path still diverges", () => {
+  assert.notEqual(
+    pathOf("https://h.test/catalog.html?pt_token=X"),
+    pathOf("https://h.test/catalog-p2.html?pt_token=X"),
+  )
 })
