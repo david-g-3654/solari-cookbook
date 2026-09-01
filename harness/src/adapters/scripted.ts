@@ -19,14 +19,29 @@ export const scriptedAdapter: Adapter = {
     const answer: Record<string, unknown> = {}
     let index = 0
 
-    const exec = async (step: Step): Promise<void> => {
-      ctx.emit(await ctx.executor.trace(step, index++, answer))
+    const exec = async (step: Step) => {
+      const outcome = await ctx.executor.trace(step, index++, answer)
+      ctx.emit(outcome)
+      return outcome
     }
 
     // Interstitial recovery is not handled here: an injected wall can land
     // inside a compound step like `paginate`, so the executor clears it after
     // every navigation it performs. See run/recovery.ts.
-    for (const step of ctx.task.steps) await exec(step)
+    for (const step of ctx.task.steps) {
+      const outcome = await exec(step)
+      if (!outcome.ok) {
+        // Stop rather than grinding through the rest of the script. Once a
+        // step fails the run is already lost, and every following step just
+        // burns another full timeout against a page that will never have the
+        // element — five dead steps is over a minute of cloud browser time.
+        // The trace stays honest: it records what was actually attempted.
+        ctx.log(`step ${outcome.index} failed, abandoning ${
+          ctx.task.steps.length - outcome.index - 1
+        } remaining step(s)`)
+        break
+      }
+    }
 
     return answer
   },

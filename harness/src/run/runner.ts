@@ -5,21 +5,14 @@
  * seeded fault chain. Sessions are independent, so a slow or wedged run cannot
  * corrupt its neighbours — the worst it does is fail its own assertions.
  *
- * Fault interception is installed on the browser CONTEXT rather than on our
- * page, deliberately: adapters like Stagehand and Browser-Use attach over CDP
- * and open pages of their own, and context-level routing is what makes those
- * pages meet the same injected faults as the scripted baseline.
+ * Driving a task is execute-task.ts's job; everything here is about getting a
+ * Solari session, releasing it, and collecting what came back.
  */
 import { Solari } from "@solarisdk/browser"
-import type { BrowserContext, Page } from "patchright-core"
-import { FaultChain } from "../faults/index.js"
-import { StepExecutor, captureFinalState } from "./executor.js"
-import { makeRecoveryHandler } from "./recovery.js"
-import { scoreAll, statusOf } from "./score.js"
+import { executeTask } from "./execute-task.js"
+import type { TaskExecutionOutput } from "./execute-task.js"
 import type { Adapter } from "../adapters/index.js"
-import type {
-  FaultSpec, Observation, RunResult, Suite, Task, TraceStep,
-} from "../types.js"
+import type { FaultSpec, RunResult, Suite, Task } from "../types.js"
 
 export interface RunnerOptions {
   apiKey: string
@@ -91,118 +84,84 @@ async function runOne(
   const started = Date.now()
   const log = (m: string) => opts.log(`[${task.id}] ${m}`)
 
-  const trace: TraceStep[] = []
-  const observation: Observation = { navigations: [], faultEvents: [], consoleErrors: [] }
-  let answer: Record<string, unknown> = {}
-  let sessionId: string | undefined
-  let error: string | undefined
-  let finalUrl = ""
-  let finalText = ""
-  let visibleSelectors = new Set<string>()
-
   log(`launching (seed ${seed}, ${opts.faults.length} fault(s))`)
-  const browser = await solari.launch({ recording: true })
-  sessionId = browser.id
 
-  const chain = new FaultChain({ faults: opts.faults, seed })
+  let sessionId: string | undefined
+  let result: TaskExecutionOutput
   try {
-    const context = browser.contexts()[0] ?? (await browser.newContext())
-    await installFaults(context, chain)
-    const page = await context.newPage()
-    wireObservers(page, observation)
-
-    // The handler needs the executor and the executor needs the handler, so
-    // the handler takes a lazy getter rather than the instance.
-    let executor!: StepExecutor
-    const onInterstitial = makeRecoveryHandler(page, () => executor, task.recovery, log)
-    executor = new StepExecutor(page, opts.baseUrl, { onInterstitial })
-
-    answer = await opts.adapter.run({
-      page,
-      baseUrl: opts.baseUrl,
-      cdpEndpoint: browser.cdpEndpoint,
-      task,
-      executor,
-      emit: (t) => trace.push(t),
-      log,
-    })
-
-    const final = await captureFinalState(page, selectorsUnderTest(task))
-    finalUrl = final.url
-    finalText = final.text
-    visibleSelectors = final.visibleSelectors
+    const browser = await solari.launch({ recording: true })
+    sessionId = browser.id
+    try {
+      const context = browser.contexts()[0] ?? (await browser.newContext())
+      result = await executeTask({
+        context,
+        task,
+        baseUrl: opts.baseUrl,
+        faults: opts.faults,
+        seed,
+        adapter: opts.adapter,
+        cdpEndpoint: browser.cdpEndpoint,
+        log,
+      })
+    } finally {
+      // Closing the browser also RELEASES the session, which is what starts
+      // the replay upload. Do it before polling for the replay, not after.
+      await browser.close().catch(() => {})
+    }
   } catch (err) {
-    error = err instanceof Error ? err.message.split("\n")[0]! : String(err)
-    log(`error: ${error}`)
-  } finally {
-    observation.faultEvents.push(...chain.events)
-    // Closing the browser also RELEASES the session, which is what starts the
-    // replay upload. Do it before polling for the replay, not after.
-    await browser.close().catch(() => {})
+    // A session that could not be acquired (or a browser that died on
+    // teardown) is this run's problem, not the suite's. Record it as an
+    // errored run so the other four still report.
+    const message = err instanceof Error ? err.message.split("\n")[0]! : String(err)
+    log(`could not run: ${message}`)
+    result = erroredRun(message)
   }
-
-  const assertions = scoreAll(task.assertions, {
-    url: finalUrl,
-    text: finalText,
-    answer,
-    visibleSelectors,
-  })
-  const status = statusOf(assertions, Boolean(error))
 
   const replayBytes = sessionId
     ? await fetchReplay(solari, sessionId, runId, opts.replayTimeoutMs, log)
     : undefined
 
-  log(`${status.toUpperCase()} — ${assertions.filter((a) => a.ok).length}/${assertions.length} assertions`)
+  log(
+    `${result.status.toUpperCase()} — ` +
+      `${result.assertions.filter((a) => a.ok).length}/${result.assertions.length} assertions`,
+  )
 
   return {
     runId,
     taskId: task.id,
     adapter: opts.adapter.name,
-    status,
+    status: result.status,
     seed,
     startedAt: new Date(started).toISOString(),
     durationMs: Date.now() - started,
-    ...(sessionId ? { sessionId } : {}),
+    sessionId,
     ...(opts.fixtureSnapshotId ? { fixtureSnapshotId: opts.fixtureSnapshotId } : {}),
     baseUrl: opts.baseUrl,
     faults: opts.faults,
     recoveryEnabled: task.recovery !== undefined,
-    trace,
-    observation,
-    answer,
-    assertions,
-    ...(error ? { error } : {}),
+    trace: result.trace,
+    observation: result.observation,
+    answer: result.answer,
+    assertions: result.assertions,
+    ...(result.error ? { error: result.error } : {}),
     ...(replayBytes !== undefined ? { replayBytes } : {}),
   }
 }
 
-async function installFaults(context: BrowserContext, chain: FaultChain): Promise<void> {
-  if (chain.faultCount === 0) return
-  await context.route("**/*", async (route) => {
-    try {
-      await chain.handle(route)
-    } catch {
-      // Never let the fault layer wedge a run: fall through to the network.
-      await route.continue().catch(() => {})
-    }
-  })
-}
 
-function wireObservers(page: Page, observation: Observation): void {
-  page.on("framenavigated", (frame) => {
-    if (frame === page.mainFrame()) observation.navigations.push(frame.url())
-  })
-  page.on("console", (msg) => {
-    if (msg.type() === "error") observation.consoleErrors.push(msg.text().slice(0, 300))
-  })
-}
 
-/** Selectors an assertion will ask about, so we can check them before teardown. */
-function selectorsUnderTest(task: Task): string[] {
-  return task.assertions
-    .filter((a): a is Extract<typeof a, { kind: "selectorVisible" }> => a.kind === "selectorVisible")
-    .map((a) => a.selector)
+
+/** A run that never got off the ground, shaped like any other run. */
+function erroredRun(error: string): TaskExecutionOutput {
+  return {
+    trace: [],
+    observation: { navigations: [], faultEvents: [], consoleErrors: [] },
+    answer: {},
+    assertions: [],
+    status: "error",
+    error,
+    finalUrl: "",
+  }
 }
 
 /**

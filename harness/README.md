@@ -174,11 +174,27 @@ site where it bites:
 
 ## Status
 
-Everything here typechecks strictly and the pure logic is covered by tests that
-need no network. **The Solari path has not yet been exercised against the live
-API** — it is written against the SDK's actual typed surface (`launch`,
-`recording`, `downloadReplay`, `sandboxes.create`, `snapshot`,
-`create({ fromSnapshot })`, `previewUrl`), but no end-to-end run has happened.
+**Verified.** Everything except the Solari API itself runs green:
+
+- `npm test` — 15 unit tests, no network, no browser. The fault state machine
+  (counters, one-shot login wall, seeded-jitter reproducibility, short-circuit
+  ordering), the scorer, and the replay differ.
+- `npm run test:integration` — 12 tests driving the **real** harness code
+  through a **real** browser against a **real** HTTP server. All five golden
+  tasks pass clean; the login wall is served exactly once and recovered from
+  mid-pagination without losing an item; the same wall with `--no-recovery`
+  fails as it should; an injected 503 fails the run; and two runs at the same
+  seed produce byte-identical traces, answers and fault streams.
+
+That last one is the local half of the replay claim. It uses the locally
+installed Chrome (`channel: "chrome"`), so it needs no browser download, and
+skips itself cleanly if Chrome is absent.
+
+**Not yet verified: the live Solari API.** The Solari layer is written against
+the SDK's actual typed surface (`launch`, `recording`, `downloadReplay`,
+`sandboxes.create`, `snapshot`, `create({ fromSnapshot })`, `previewUrl`), and
+`executeTask` — the part the integration tests exercise — is the same code the
+cloud runner drives. But no end-to-end run against Solari has happened yet.
 
 To do that first run:
 
@@ -188,24 +204,27 @@ npm run splitflap -- run --faults latency,loginWall
 npm run splitflap -- replay <runId-from-the-summary>
 ```
 
-Two things to watch on that first run, both flagged in the code:
+Two things to watch, both flagged in the code rather than assumed:
 
 1. **Does a forked VM resume with its HTTP server running?** `fork()`
    health-checks and restarts it either way, and the dashboard reports which
    happened — so the answer shows up rather than hiding.
-2. **Do context-level routes reach pages an adapter opens over CDP?** The
-   faults are installed on the browser context precisely so Stagehand's and
-   Browser-Use's own pages inherit them. That holds for the `scripted` adapter
-   by construction; it needs confirming for the other two.
+2. **Do context-level routes reach pages an adapter opens over CDP?** Faults
+   are installed on the browser context precisely so Stagehand's and
+   Browser-Use's own pages inherit them. Confirmed for the `scripted` adapter;
+   needs confirming for the other two.
 
 ## Tests
 
 ```bash
-npm test        # 15 tests, no network, no browser
+npm test              # 15 unit tests — no network, no browser
+npm run test:integration   # 12 tests — real browser, real server, ~40s
+npm run test:all
 ```
 
-Covers the fault state machine (counters, one-shot login wall, seeded jitter
-reproducibility, short-circuit ordering), the scorer, and the replay differ.
+Integration tests drive `executeTask`, which is the same entry point the cloud
+runner uses — so they test the code that ships rather than a reimplementation
+of it.
 
 ## Layout
 
@@ -216,7 +235,7 @@ src/
   fixture/            the hermetic site, and the sandbox that serves it
   faults/             seeded fault interception
   adapters/           scripted, stagehand, browser-use (+ python bridge)
-  run/                executor, parallel runner, scoring
+  run/                executor, task execution, parallel runner, scoring
   replay/             fork-and-diff
   report/             store + dashboard
 ```
