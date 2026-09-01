@@ -172,6 +172,32 @@ site where it bites:
 - A forked VM *should* resume with its server running. `fork()` health-checks
   and restarts it if not, and the dashboard reports which happened.
 
+## Status
+
+Everything here typechecks strictly and the pure logic is covered by tests that
+need no network. **The Solari path has not yet been exercised against the live
+API** — it is written against the SDK's actual typed surface (`launch`,
+`recording`, `downloadReplay`, `sandboxes.create`, `snapshot`,
+`create({ fromSnapshot })`, `previewUrl`), but no end-to-end run has happened.
+
+To do that first run:
+
+```bash
+cp .env.example .env      # paste your slr_live_ key
+npm run splitflap -- run --faults latency,loginWall
+npm run splitflap -- replay <runId-from-the-summary>
+```
+
+Two things to watch on that first run, both flagged in the code:
+
+1. **Does a forked VM resume with its HTTP server running?** `fork()`
+   health-checks and restarts it either way, and the dashboard reports which
+   happened — so the answer shows up rather than hiding.
+2. **Do context-level routes reach pages an adapter opens over CDP?** The
+   faults are installed on the browser context precisely so Stagehand's and
+   Browser-Use's own pages inherit them. That holds for the `scripted` adapter
+   by construction; it needs confirming for the other two.
+
 ## Tests
 
 ```bash

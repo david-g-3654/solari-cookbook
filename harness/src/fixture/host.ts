@@ -99,6 +99,28 @@ export class FixtureHost {
     return `${this.baseUrl}/_dash/index.html`
   }
 
+  /**
+   * Hold the sandbox open so a human can actually look at the dashboard.
+   *
+   * `timeoutMs` is a rolling IDLE window, not a hard deadline, and a dashboard
+   * nobody has clicked yet counts as idle — so a plain sleep would let the VM
+   * expire out from under the URL we just printed. Heartbeat instead.
+   */
+  async keepAlive(ms: number, log: (m: string) => void): Promise<void> {
+    const deadline = Date.now() + ms
+    const HEARTBEAT_MS = 60_000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, Math.min(HEARTBEAT_MS, deadline - Date.now())))
+      if (Date.now() >= deadline) break
+      try {
+        await this.sandbox.setTimeout(BOOT_TIMEOUT_MS)
+      } catch (err) {
+        log(`keep-alive heartbeat failed: ${(err as Error).message}`)
+        return
+      }
+    }
+  }
+
   async kill(): Promise<void> {
     await this.sandbox.kill().catch(() => {})
   }

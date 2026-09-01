@@ -124,7 +124,7 @@ async function cmdRun(args: Args): Promise<number> {
       const url = await fixture.publishDashboard(renderDashboard(suite))
       log(`\ndashboard: ${url}`)
       log(`(kept alive ${keepAliveMin} min; Ctrl-C to tear down now)`)
-      await sleep(keepAliveMin * 60_000)
+      await withTeardownOnInterrupt(fixture, () => fixture.keepAlive(keepAliveMin * 60_000, log))
     }
   } finally {
     await fixture.kill()
@@ -184,7 +184,7 @@ async function cmdServe(args: Args): Promise<number> {
     const url = await host.publishDashboard(renderDashboard(suite, replays))
     log(`\ndashboard: ${url}`)
     log(`(kept alive ${keepAliveMin} min; Ctrl-C to tear down now)`)
-    await sleep(keepAliveMin * 60_000)
+    await withTeardownOnInterrupt(host, () => host.keepAlive(keepAliveMin * 60_000, log))
   } finally {
     await host.kill()
   }
@@ -229,7 +229,31 @@ function printSummary(suite: Suite): void {
   log(`\n${passed}/${suite.runs.length} tasks passed in ${(suite.durationMs / 1000).toFixed(1)}s`)
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/**
+ * Ctrl-C during the keep-alive window should destroy the VM, not orphan it
+ * until its idle timeout. Node's default SIGINT handling would exit the
+ * process before the `finally` teardown ever ran.
+ */
+async function withTeardownOnInterrupt(
+  host: FixtureHost,
+  body: () => Promise<void>,
+): Promise<void> {
+  let onSigint: (() => void) | undefined
+  try {
+    await Promise.race([
+      body(),
+      new Promise<void>((resolve) => {
+        onSigint = () => {
+          log("\ninterrupted — tearing down")
+          resolve()
+        }
+        process.once("SIGINT", onSigint)
+      }),
+    ])
+  } finally {
+    if (onSigint) process.off("SIGINT", onSigint)
+  }
+}
 const truncate = (s: string, n = 120) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 
 async function main(): Promise<number> {
