@@ -10,7 +10,7 @@
   "scripts": {
     "splitflap": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/faults.test.ts test/score-and-diff.test.ts",
+    "test": "tsx --test test/faults.test.ts test/score-and-diff.test.ts test/openrouter-llm.test.ts",
     "test:integration": "tsx --test test/integration.test.ts",
     "test:all": "tsx --test test/*.test.ts"
   },

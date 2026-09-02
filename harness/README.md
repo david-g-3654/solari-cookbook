@@ -213,7 +213,7 @@ DETERMINISTIC — replay matched the original on every compared field
 - **Dashboard** — HTTP 200 on its `*.preview.getsolari.com` URL, with the
   replay verdict and fork provenance rendered.
 
-Plus, offline: `npm test` (18 unit tests) and `npm run test:integration`
+Plus, offline: `npm test` (31 unit tests) and `npm run test:integration`
 (12 tests driving the real harness through a real browser).
 
 **Browser-Use verified live**, through OpenRouter, against a real cloud
@@ -271,7 +271,7 @@ everything else — `sf_auth=1` and submitted form fields are real signal.
 ## Tests
 
 ```bash
-npm test              # 18 unit tests — no network, no browser
+npm test              # 31 unit tests — no network, no browser
 npm run test:integration   # 12 tests — real browser, real server, ~40s
 npm run test:all
 ```

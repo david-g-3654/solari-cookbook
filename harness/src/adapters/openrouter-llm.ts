@@ -71,7 +71,7 @@ interface OpenAiToolCall {
   function: { name: string; arguments: string }
 }
 
-interface OpenAiMessage {
+export interface OpenAiMessage {
   role: "system" | "user" | "assistant" | "tool"
   content?: string | Array<Record<string, unknown>> | null
   tool_calls?: OpenAiToolCall[]
@@ -88,7 +88,7 @@ const dataUrl = (b: ImageBlock): string => `data:${b.mimeType};base64,${b.data}`
  * Convert one Stagehand message into one or more OpenAI messages.
  * Tool results have to be split out into their own `role: "tool"` entries.
  */
-function toOpenAiMessages(msg: LLMMessage): OpenAiMessage[] {
+export function toOpenAiMessages(msg: LLMMessage): OpenAiMessage[] {
   const blocks = asArray(msg.content)
   const out: OpenAiMessage[] = []
 
@@ -134,7 +134,7 @@ function toOpenAiMessages(msg: LLMMessage): OpenAiMessage[] {
   return out
 }
 
-function buildBody(params: GenerateParams, model: string): Record<string, unknown> {
+export function buildBody(params: GenerateParams, model: string): Record<string, unknown> {
   const messages: OpenAiMessage[] = []
   if (params.systemPrompt) messages.push({ role: "system", content: params.systemPrompt })
   for (const m of params.messages) messages.push(...toOpenAiMessages(m))
@@ -169,7 +169,7 @@ function buildBody(params: GenerateParams, model: string): Record<string, unknow
   }
 }
 
-interface ChatCompletion {
+export interface ChatCompletion {
   choices?: Array<{
     message?: { content?: string | null; tool_calls?: OpenAiToolCall[] }
     finish_reason?: string
@@ -178,7 +178,7 @@ interface ChatCompletion {
   error?: { message?: string }
 }
 
-function toResult(json: ChatCompletion, wantsJson: boolean): GenerateResult {
+export function toResult(json: ChatCompletion, wantsJson: boolean): GenerateResult {
   const choice = json.choices?.[0]
   const text = choice?.message?.content ?? ""
   const calls = choice?.message?.tool_calls ?? []
