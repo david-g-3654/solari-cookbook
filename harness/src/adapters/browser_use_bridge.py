@@ -139,17 +139,13 @@ async def main() -> int:
     except Exception as err:  # surfaced as a run error, not a harness crash
         emit({"ok": False, "error": f"{type(err).__name__}: {err}"})
         return 1
-    finally:
-        # Only detaches this client. The Solari session belongs to the runner,
-        # which releases it after flushing the recording.
-        close = getattr(session, "kill", None) or getattr(session, "close", None)
-        if close:
-            try:
-                result = close()
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception:
-                pass
+    # NO session teardown here, deliberately.
+    #
+    # The browser belongs to the harness, not to this bridge. The previous code
+    # preferred `kill()`, which tears down a browser the runner is still using
+    # and still has to capture the final page state from. This process exits
+    # immediately after emitting its result, which drops the CDP client on its
+    # own; the runner then closes the browser and flushes the recording.
 
 
 if __name__ == "__main__":

@@ -217,7 +217,8 @@ Plus, offline: `npm test` (31 unit tests) and `npm run test:integration`
 (12 tests driving the real harness through a real browser).
 
 **Browser-Use verified live**, through OpenRouter, against a real cloud
-browser — and it settled the open question about fault routing:
+browser — the full 5-task suite, plus a targeted run that settled the open
+question about fault routing:
 
 > `loginWall — served wall on navigation #2` at `/catalog.html`
 
@@ -253,7 +254,31 @@ pinning to 3.x would work. Its API differs enough (`new Stagehand({ env,
 localBrowserLaunchOptions: { cdpUrl } })`, `init()`, `stagehand.page.act()`,
 and an `llmClient` for the model) that the adapter would need rewriting.
 
-## What the live run taught us
+## What the eval actually caught
+
+The full golden suite through Browser-Use (`openrouter/anthropic/claude-sonnet-4.5`,
+`--faults latency,loginWall`) scored **3/5**, against 5/5 for the scripted
+baseline under the same faults. Both failures are real agent behaviour, and
+they fail in different ways:
+
+**`paginate-collect` — 16 of 24 SKUs.** The agent walked two of the three
+catalog pages and stopped. `#last-page` was never reached. The scripted control
+collects all 24 under identical faults, so the task is passable; the agent just
+gave up early on a long traversal.
+
+**`checkout-form` — an order reference for an order that was never placed.**
+This is the one worth the whole exercise. The agent filled the form and
+submitted, the injected login wall intercepted that navigation, and the agent
+never noticed it had been bounced to a sign-in page. It reported
+`ref: "6724099"` — a confabulated reference. Reproduced twice.
+
+Note what the assertions did here. `urlContains "checkout-done"` **passed**,
+because the wall is served *in place of* that URL — same address, different
+body. Only `selectorVisible #order-confirmed` and the reference check caught
+it. An eval resting on the URL alone would have scored this a pass and told you
+your agent could check out.
+
+## What the live runs taught us
 
 Two bugs only a real run could surface, both now fixed and regression-tested:
 

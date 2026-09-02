@@ -12,6 +12,19 @@
 import type { AssertionResult, RunResult, Suite, TraceStep } from "../types.js"
 import type { ReplayResult } from "../types.js"
 
+/**
+ * Preview URLs carry an access token in the query. The dashboard is a page
+ * people share, so show the origin and drop the credential.
+ */
+const publicUrl = (u: string): string => {
+  try {
+    const parsed = new URL(u)
+    return parsed.origin
+  } catch {
+    return u
+  }
+}
+
 const esc = (s: unknown): string =>
   String(s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
@@ -226,7 +239,7 @@ export function renderDashboard(
 ${suite.runs.map((r) => runRow(r, replays[r.runId])).join("\n")}
 
 <footer>
-  Fixture served from <code>${esc(suite.baseUrl)}</code>${
+  Fixture served from <code>${esc(publicUrl(suite.baseUrl))}</code>${
     suite.fixtureSnapshotId
       ? ` · snapshot <code>${esc(suite.fixtureSnapshotId)}</code>`
       : " · no snapshot (runs are not replayable)"
