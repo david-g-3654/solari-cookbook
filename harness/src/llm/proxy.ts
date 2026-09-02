@@ -144,6 +144,14 @@ export class LlmProxy {
     }
 
     const upstream = await this.forward(path, JSON.stringify(parsed), "POST")
+    if (upstream.status !== 200) {
+      // Only 200s are recorded, so a failing upstream call would otherwise
+      // vanish: the cassette just ends and the agent dies with no explanation.
+      this.opts.log?.(
+        `[${binding.runId}] upstream ${upstream.status}: ` +
+          `${JSON.stringify(upstream.json).slice(0, 200)}`,
+      )
+    }
     if (upstream.status === 200) {
       binding.stats.live++
       binding.entries.push({

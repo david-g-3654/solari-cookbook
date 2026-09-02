@@ -110,7 +110,18 @@ function runBridge(
         if (line.trim() && !line.startsWith(SENTINEL)) log(`  browser-use | ${line.trim()}`)
       }
     })
-    child.stderr.on("data", (b: Buffer) => { err += b.toString() })
+    child.stderr.on("data", (b: Buffer) => {
+      const chunk = b.toString()
+      err += chunk
+      // browser-use logs to stderr, and discarding it on success made a whole
+      // reproduction run uninterpretable: agents that stopped after one model
+      // call left no trace of why. Surface anything that looks like a failure.
+      for (const line of chunk.split("\n")) {
+        if (/error|exception|traceback|rate.?limit|429|refus|failed/i.test(line)) {
+          log(`  browser-use! ${line.trim().slice(0, 200)}`)
+        }
+      }
+    })
 
     child.on("error", (e) =>
       reject(new Error(`could not start ${python} for the browser-use bridge: ${e.message}`)),
