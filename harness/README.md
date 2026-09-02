@@ -284,12 +284,24 @@ of it.
 
 ```
 src/
-  cli.ts              run | replay | serve | tasks | suites
+  cli.ts              run | replay | serve | clean | tasks | suites
+  config.ts           env loading, paths, fixture port
+  url.ts              building paths onto a token-carrying preview URL
+  retry.ts            waiting out the plan's concurrency cap
   tasks/              the 5 golden tasks
   fixture/            the hermetic site, and the sandbox that serves it
   faults/             seeded fault interception
-  adapters/           scripted, stagehand, browser-use (+ python bridge)
-  run/                executor, task execution, parallel runner, scoring
+  adapters/
+    scripted.ts       the deterministic control
+    browser-use.ts    + browser_use_bridge.py (out-of-process, Python)
+    stagehand.ts      + openrouter-llm.ts (its ClientLLM bridge)
+    model.ts          provider/model resolution, incl. OpenRouter
+  run/
+    execute-task.ts   drive one task in a browser context (Solari-agnostic)
+    executor.ts       step execution
+    recovery.ts       interstitial recovery, shared by run and replay
+    runner.ts         N parallel Solari sessions
+    score.ts          assertions -> pass/fail
   replay/             fork-and-diff
   report/             store + dashboard
 ```
