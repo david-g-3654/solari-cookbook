@@ -13,6 +13,8 @@
  *   2. No network, no clocks, no randomness. Same request, same HTML, always.
  */
 
+import { createHash } from "node:crypto"
+
 const CSS = `
 :root { color-scheme: light dark; --fg:#111; --bg:#fff; --mut:#666; --line:#e3e3e3; --acc:#1a56db; }
 @media (prefers-color-scheme: dark) {
@@ -153,6 +155,20 @@ time from fixed inputs, so two runs see exactly the same web.</p>
   )
 
   return files
+}
+
+/**
+ * Content hash of the whole fixture. Two sandboxes serving the same hash serve
+ * byte-identical sites, so a snapshot taken from one is reusable by the other —
+ * which is what stops every suite minting another multi-gigabyte snapshot.
+ */
+export function fixtureHash(): string {
+  const files = fixtureFiles()
+  const canonical = Object.keys(files)
+    .sort()
+    .map((name) => `${name}\u0000${files[name]}`)
+    .join("\u0001")
+  return createHash("sha256").update(canonical).digest("hex").slice(0, 12)
 }
 
 /** Item count, exported so tasks can assert against it without duplicating it. */

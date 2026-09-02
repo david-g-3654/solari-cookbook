@@ -44,12 +44,22 @@ export const browserUseAdapter: Adapter = {
       cdpUrl: ctx.cdpEndpoint,
       goal: ctx.task.goal,
       extract: ctx.task.extract ?? null,
-      model: {
-        provider: model.provider,
-        model: model.model,
-        apiKey: model.apiKey,
-        ...(model.baseUrl ? { baseUrl: model.baseUrl } : {}),
-      },
+      // When the recording proxy is in play, point the agent at it and hand
+      // the subprocess a placeholder — the real key stays in this process and
+      // never reaches the Python side at all.
+      model: ctx.modelBaseUrl
+        ? {
+            provider: "openai",
+            model: model.model,
+            apiKey: "splitflap-proxy",
+            baseUrl: ctx.modelBaseUrl,
+          }
+        : {
+            provider: model.provider,
+            model: model.model,
+            apiKey: model.apiKey,
+            ...(model.baseUrl ? { baseUrl: model.baseUrl } : {}),
+          },
       maxSteps: 25,
     }, ctx.log)
 

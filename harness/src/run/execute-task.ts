@@ -29,6 +29,8 @@ export interface TaskExecutionInput {
   adapter: Adapter
   /** Raw CDP endpoint, for adapters that attach themselves. */
   cdpEndpoint: string
+  /** Recording proxy base URL, when model traffic is being captured. */
+  modelBaseUrl?: string
   log: (msg: string) => void
 }
 
@@ -70,6 +72,7 @@ export async function executeTask(input: TaskExecutionInput): Promise<TaskExecut
       page,
       baseUrl: input.baseUrl,
       cdpEndpoint: input.cdpEndpoint,
+      ...(input.modelBaseUrl ? { modelBaseUrl: input.modelBaseUrl } : {}),
       task,
       executor,
       emit: (t) => trace.push(t),

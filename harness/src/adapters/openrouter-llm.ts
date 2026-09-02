@@ -233,18 +233,24 @@ function safeParse(s: string): Record<string, unknown> {
  * Native providers go through Stagehand's own client; anything needing a base
  * URL (OpenRouter) gets this `generate` bridge instead.
  */
-export function stagehandModel(choice: ModelChoice): unknown {
-  if (choice.provider !== "openrouter") {
+export function stagehandModel(choice: ModelChoice, proxyBaseUrl?: string): unknown {
+  // Native providers go through Stagehand's own client, which offers no base
+  // URL — so they cannot be routed through the recording proxy either.
+  if (choice.provider !== "openrouter" && !proxyBaseUrl) {
     return { modelName: choice.id, apiKey: choice.apiKey }
   }
+
+  const baseUrl = proxyBaseUrl ?? choice.baseUrl ?? OPENROUTER_BASE_URL
+  // The proxy holds the upstream key; anything sent to it is a placeholder.
+  const apiKey = proxyBaseUrl ? "splitflap-proxy" : choice.apiKey
 
   return {
     generate: async (params: GenerateParams): Promise<GenerateResult> => {
       const wantsJson = params.responseFormat?.type === "json_schema"
-      const res = await fetch(`${choice.baseUrl ?? OPENROUTER_BASE_URL}/chat/completions`, {
+      const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${choice.apiKey}`,
+          authorization: `Bearer ${apiKey}`,
           "content-type": "application/json",
           // OpenRouter attributes traffic with these; harmless elsewhere.
           "x-title": "splitflap",

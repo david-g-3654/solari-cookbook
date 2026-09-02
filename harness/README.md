@@ -45,7 +45,7 @@ you can convict suspect 1.
 | Source of nondeterminism | How it is pinned |
 | --- | --- |
 | The site's responses | Tasks run against a hermetic fixture site served from a Solari sandbox. Before the suite starts, the microVM is **snapshotted while it is still serving**. Replay **forks** that snapshot, so the replayed run gets the same bytes — not a re-fetch, a copy. |
-| The agent's decisions | Replay re-executes the **recorded action trace** instead of asking the model again. Deterministic, and it costs no tokens. |
+| The agent's decisions | A **cassette** records every model call. Replay re-runs the real agent with its recorded answers served back — deterministic, and it costs no tokens. Scripted runs re-execute their recorded action trace instead. |
 | Timing and failure modes | Faults are driven by a seeded PRNG and integer counters, never by wall-clock. Same seed → the same requests are delayed, 5xx'd and walled at the same points. |
 
 When a replay diverges, the divergence is real. That is the difference between
@@ -70,11 +70,43 @@ treating it as one would make the feature cry wolf.
 Hosts are compared by path, not by origin, because a fork always gets a
 different preview URL.
 
-**The honest limit.** The `scripted` adapter records a complete, semantic
-trace, so its runs replay end to end. The LLM adapters record what the agent
-*reported* doing — prose, not selectors — so those runs replay the
-harness-driven steps and diff observations only. Replay verifies the
-environment, not the model.
+### Two replay modes
+
+| Mode | When | What it proves |
+| --- | --- | --- |
+| `trace` | no cassette (the `scripted` adapter) | the recorded selector script reproduces |
+| `agent` | a cassette exists | the **real agent**, re-run with its recorded answers, reaches the same place |
+
+A cache **miss** is itself a finding: the agent asked something it did not ask
+when recording, so it took a different path. That counts as a divergence even
+if it happened to land in the same place. `--on-cache-miss error` refuses to
+resample at all, for a hard determinism gate; the default falls through to a
+live call so the replay finishes and reports how far it drifted.
+
+### Single-variable experiments
+
+This is what the two halves are for. Pin both, then unpin exactly one:
+
+| Pinned | Unpinned | What a divergence means |
+| --- | --- | --- |
+| world + responses | — | your agent code changed |
+| world | responses (new cassette) | the model's own nondeterminism |
+| world | the model (`SPLITFLAP_MODEL=…`) | a controlled A/B between models |
+
+### What gets normalised, and why
+
+A cache key is a hash of the request, so anything volatile in the prompt would
+miss on every lookup. Normalised away: the fork's preview host and access
+token, wall-clock (Browser-Use writes `current date/time is 2026-09-02 01:56
+UTC` into its system prompt — two runs minutes apart otherwise ask literally
+different questions), and per-session tab ids.
+
+The trade-off is deliberate: a prompt differing only by what o'clock it is is
+not a different question. The cost is that a task genuinely about dates would
+have real differences normalised too. Substitutions are *named* in the
+canonical text (`<TIMESTAMP>`, `<TAB>`) rather than deleted, so a miss report
+still shows where they landed — and a miss prints the first differing region
+of the prompt, which is how each of these was found in the first place.
 
 ## The five golden tasks
 
@@ -93,6 +125,37 @@ from inside a Solari sandbox, generated from fixed inputs with no clocks and no
 randomness. That is a deliberate choice: if tasks pointed at real sites, a red
 cell would mean "the agent regressed" *or* "someone else's site was down", and
 you would learn to ignore the board. Here a red cell always means the agent.
+
+## Repetition, and what it separates
+
+A single run of a stochastic agent tells you almost nothing. `paginate-collect`
+returned 16 of 24 SKUs once — that could be a 0% pass rate or a 60% one, and
+those call for very different responses.
+
+```bash
+npm run splitflap -- run --repeat 5 --faults latency
+```
+
+```
+  PASS   catalog-browse       3/3 passed  27.1s median
+  FLAKY  paginate-collect     2/5 passed  41.0s median  · answerCountAtLeast failed 3×
+```
+
+Every attempt at a task shares that task's seed, so the world and the injected
+faults are byte-identical across attempts. The spread you measure is the
+agent's own nondeterminism, not the web's — which is exactly the distinction
+`--repeat` exists to draw. Three outcomes, and the middle one is invisible at
+N=1:
+
+- **stable-pass** — passed every attempt
+- **flaky** — passed some. The rate is the finding, and the report names which
+  assertion was unreliable and how often
+- **stable-fail** — a consistent bug, not noise
+
+It also counts **false successes**: runs that produced an answer while failing
+their checks. An agent that fails loudly is manageable; one that reports an
+order reference for an order it never placed is not, and the two should never
+share a cell on a dashboard.
 
 ## The failure modes
 
@@ -155,7 +218,7 @@ run [options]              run the golden tasks on parallel cloud browsers
   --no-recovery            strip login-wall recovery (regression demo)
   --keep-alive MIN         keep the dashboard up this long (default: 10)
 
-replay <runId> [--keep-fork]
+replay <runId> [--keep-fork] [--on-cache-miss live|error]
 serve [suiteId]            re-publish a stored suite's dashboard
 tasks                      list the golden tasks
 suites                     list stored suites
@@ -204,8 +267,10 @@ DETERMINISTIC — replay matched the original on every compared field
 - **Parallel cloud browsers** — 5 tasks, `--parallel 5`, on a free plan whose
   cap is 3 concurrent sessions. The suite self-throttled and all five passed.
 - **Session recording** — rrweb NDJSON downloaded for every run (5–31 KB).
-- **Snapshot / fork** — replay forked the fixture snapshot and the VM **resumed
-  with its HTTP server still running**, no restart needed.
+- **Snapshot / fork** — replay forks the fixture snapshot. The VM sometimes
+  resumes with its HTTP server still running and sometimes does not; the same
+  snapshot has forked both ways. The harness health-checks, restarts the server
+  when needed, and reports which happened rather than implying a guarantee.
 - **Replay determinism** — the login wall fired at the same navigation, was
   recovered from, and every compared field matched. As a negative control, a
   deliberately corrupted stored answer was correctly reported as a divergence
@@ -213,7 +278,19 @@ DETERMINISTIC — replay matched the original on every compared field
 - **Dashboard** — HTTP 200 on its `*.preview.getsolari.com` URL, with the
   replay verdict and fork provenance rendered.
 
-Plus, offline: `npm test` (31 unit tests) and `npm run test:integration`
+**Stage 2 verified live too** — a Browser-Use run recorded a cassette, and
+replaying it re-ran the agent to an identical outcome:
+
+```
+replaying in agent mode (2 recorded calls)
+model: 2 answered from the cassette, 0 miss(es)
+DETERMINISTIC — replay matched the original on every compared field,
+               with the agent re-run against its recorded responses
+```
+
+Zero live calls: an LLM agent run reproduced exactly, for no tokens.
+
+Plus, offline: `npm test` (57 unit tests) and `npm run test:integration`
 (12 tests driving the real harness through a real browser).
 
 **Browser-Use verified live**, through OpenRouter, against a real cloud
@@ -296,7 +373,7 @@ everything else — `sf_auth=1` and submitted form fields are real signal.
 ## Tests
 
 ```bash
-npm test              # 31 unit tests — no network, no browser
+npm test              # 57 unit tests — no network, no browser
 npm run test:integration   # 12 tests — real browser, real server, ~40s
 npm run test:all
 ```
@@ -312,6 +389,9 @@ src/
   cli.ts              run | replay | serve | clean | tasks | suites
   config.ts           env loading, paths, fixture port
   url.ts              building paths onto a token-carrying preview URL
+  llm/
+    proxy.ts          recording proxy in front of the model endpoint
+    cassette.ts       cassette storage, key canonicalisation, miss diffs
   retry.ts            waiting out the plan's concurrency cap
   tasks/              the 5 golden tasks
   fixture/            the hermetic site, and the sandbox that serves it
@@ -328,7 +408,9 @@ src/
     runner.ts         N parallel Solari sessions
     score.ts          assertions -> pass/fail
   replay/             fork-and-diff
-  report/             store + dashboard
+  report/
+    aggregate.ts      repeat-N pass rates and stability
+    store.ts, dashboard.ts
 ```
 
 MIT licensed, like the rest of the cookbook.

@@ -11,6 +11,7 @@
  */
 import type { AssertionResult, RunResult, Suite, TraceStep } from "../types.js"
 import type { ReplayResult } from "../types.js"
+import { aggregate, type TaskAggregate } from "./aggregate.js"
 
 /**
  * Preview URLs carry an access token in the query. The dashboard is a page
@@ -65,7 +66,12 @@ summary:hover { background:#191d23; }
         border-radius:4px; font-size:11px; letter-spacing:.14em; text-transform:uppercase;
         background:#000; border:1px solid var(--line); }
 .flap.pass{color:var(--pass);border-color:#1e5c3a} .flap.fail{color:var(--fail);border-color:#6b2b2b}
-.flap.error{color:var(--err);border-color:#6b512b}
+.flap.error{color:var(--err);border-color:#6b512b} .flap.flaky{color:var(--amber);border-color:#6b5a2b}
+.rate { flex:0 0 auto; font-size:12px; color:var(--mut); font-variant-numeric:tabular-nums; }
+.bar { display:inline-block; width:4.5rem; height:6px; background:#000; border:1px solid var(--line);
+       border-radius:3px; overflow:hidden; vertical-align:middle; margin-left:.5rem; }
+.bar i { display:block; height:100%; background:var(--pass); }
+.warn { color:var(--err); }
 .title { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .title small { color:var(--mut); }
 .stat { flex:0 0 auto; color:var(--mut); font-size:12px; }
@@ -143,9 +149,21 @@ function replaySection(run: RunResult, replay?: ReplayResult): string {
       `<code>npm run splitflap -- replay ${esc(run.runId)}</code></p>`
     )
   }
+  const llm = replay.llm
+    ? ` · model: ${replay.llm.cacheHits} from cassette, ${replay.llm.cacheMisses} miss(es)` +
+      (replay.llm.liveCalls ? `, ${replay.llm.liveCalls} resampled` : "")
+    : ""
   const verdict = replay.deterministic
-    ? `<span class="ok">deterministic</span> — replay matched the original on every compared field`
-    : `<span class="no">diverged</span> on ${replay.diffs.length} field(s)`
+    ? `<span class="ok">deterministic</span> — ${
+        replay.mode === "agent"
+          ? "the agent was re-run against its recorded responses and matched"
+          : "replay matched the original on every compared field"
+      }`
+    : `<span class="no">diverged</span>` +
+      (replay.diffs.length ? ` on ${replay.diffs.length} field(s)` : "") +
+      (replay.llm && replay.llm.cacheMisses > 0
+        ? ` — the agent asked ${replay.llm.cacheMisses} question(s) it did not ask when recording`
+        : "")
   const diffs = replay.deterministic
     ? ""
     : `<div class="scroll"><table><tr><th>field</th><th>original</th><th>replay</th></tr>${replay.diffs
@@ -157,7 +175,7 @@ function replaySection(run: RunResult, replay?: ReplayResult): string {
         )
         .join("")}</table></div>`
   return `<h3>Replay</h3><p>${verdict}</p>
-<p class="hint">forked <code>${esc(replay.forkedSandboxId)}</code> from
+<p class="hint">${esc(replay.mode)} replay${esc(llm)}<br>forked <code>${esc(replay.forkedSandboxId)}</code> from
 <code>${esc(replay.fromSnapshotId)}</code> ·
 server ${replay.serverResumedFromSnapshot ? "resumed with the snapshot" : "restarted after fork"}
 · ${replay.durationMs}ms</p>${diffs}`
@@ -189,6 +207,13 @@ function runRow(run: RunResult, replay?: ReplayResult): string {
       run.recoveryEnabled ? "enabled" : "stripped (--no-recovery)"
     }</td></tr>
     <tr><td>session</td><td class="dim">${esc(run.sessionId ?? "—")}</td></tr>
+    ${
+      run.llm
+        ? `<tr><td>model</td><td class="dim">${esc(run.llm.model)} · ${run.llm.calls} call(s)${
+            run.attempt ? ` · attempt ${run.attempt}` : ""
+          }</td></tr>`
+        : ""
+    }
     <tr><td>recording</td><td class="dim">${
       run.replayBytes ? `${run.replayBytes} bytes of rrweb NDJSON` : "not uploaded"
     }</td></tr>
@@ -203,10 +228,41 @@ function runRow(run: RunResult, replay?: ReplayResult): string {
 </details>`
 }
 
+/**
+ * With repetitions, one row per attempt buries the finding. Group by task and
+ * lead with the pass rate — a task that passes 3 of 5 times is a different
+ * problem from one that always fails, and only the rate distinguishes them.
+ */
+function taskGroup(group: TaskAggregate, replays: Record<string, ReplayResult>): string {
+  const label =
+    group.stability === "stable-pass" ? "pass" : group.stability === "flaky" ? "flaky" : "fail"
+  const pct = Math.round(group.passRate * 100)
+  const worst = group.unreliableAssertions[0]
+  return `<details class="row">
+<summary>
+  <span class="flap ${label}">${label}</span>
+  <span class="title">${esc(group.taskId)}${
+    worst ? ` <small>· ${esc(worst.kind)} failed ${worst.failures}×</small>` : ""
+  }${
+    group.falseSuccesses > 0
+      ? ` <small class="warn">· ${group.falseSuccesses} answered while failing</small>`
+      : ""
+  }</span>
+  <span class="rate">${group.passes}/${group.attempts} passed<span class="bar"><i style="width:${pct}%"></i></span></span>
+  <span class="stat">${(group.medianDurationMs / 1000).toFixed(1)}s median</span>
+</summary>
+<div class="body">
+${group.runs.map((r) => runRow(r, replays[r.runId])).join("\n")}
+</div>
+</details>`
+}
+
 export function renderDashboard(
   suite: Suite,
   replays: Record<string, ReplayResult> = {},
 ): Record<string, string> {
+  const repeated = (suite.repeat ?? 1) > 1
+  const groups = repeated ? aggregate(suite) : []
   const count = (s: string) => suite.runs.filter((r) => r.status === s).length
   const faults = suite.runs[0]?.faults.map((f) => f.kind).join(", ") || "none"
 
@@ -223,6 +279,7 @@ export function renderDashboard(
     <span>adapter <b>${esc(suite.adapter)}</b></span>
     <span>seed <b>${suite.seed}</b></span>
     <span>parallel <b>${suite.parallel}</b></span>
+    ${repeated ? `<span>repeat <b>${suite.repeat}</b></span>` : ""}
     <span>faults <b>${esc(faults)}</b></span>
     <span>took <b>${(suite.durationMs / 1000).toFixed(1)}s</b></span>
     <span>${esc(suite.startedAt)}</span>
@@ -230,13 +287,30 @@ export function renderDashboard(
 </header>
 
 <div class="tiles">
-  <div class="tile"><div class="n pass">${count("pass")}</div><div class="k">passed</div></div>
+${
+  repeated
+    ? `  <div class="tile"><div class="n pass">${
+        groups.filter((g) => g.stability === "stable-pass").length
+      }</div><div class="k">always passed</div></div>
+  <div class="tile"><div class="n error">${
+    groups.filter((g) => g.stability === "flaky").length
+  }</div><div class="k">flaky</div></div>
+  <div class="tile"><div class="n fail">${
+    groups.filter((g) => g.stability === "stable-fail").length
+  }</div><div class="k">always failed</div></div>
+  <div class="tile"><div class="n">${groups.length}</div><div class="k">tasks × ${suite.repeat}</div></div>`
+    : `  <div class="tile"><div class="n pass">${count("pass")}</div><div class="k">passed</div></div>
   <div class="tile"><div class="n fail">${count("fail")}</div><div class="k">failed</div></div>
   <div class="tile"><div class="n error">${count("error")}</div><div class="k">errored</div></div>
-  <div class="tile"><div class="n">${suite.runs.length}</div><div class="k">tasks</div></div>
+  <div class="tile"><div class="n">${suite.runs.length}</div><div class="k">tasks</div></div>`
+}
 </div>
 
-${suite.runs.map((r) => runRow(r, replays[r.runId])).join("\n")}
+${
+  (suite.repeat ?? 1) > 1
+    ? aggregate(suite).map((g) => taskGroup(g, replays)).join("\n")
+    : suite.runs.map((r) => runRow(r, replays[r.runId])).join("\n")
+}
 
 <footer>
   Fixture served from <code>${esc(publicUrl(suite.baseUrl))}</code>${

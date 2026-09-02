@@ -75,7 +75,7 @@ export const stagehandAdapter: Adapter = {
       browser,
       // Native providers use Stagehand's own client; OpenRouter goes through
       // the `generate` bridge, since Stagehand offers no base-URL override.
-      model: stagehandModel(model),
+      model: stagehandModel(model, ctx.modelBaseUrl),
     })
 
     const answer: Record<string, unknown> = {}

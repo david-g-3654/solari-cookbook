@@ -17,7 +17,7 @@ import type { SolariClient } from "@solarisdk/sdk"
 import { FIXTURE_PORT, FIXTURE_ROOT } from "../config.js"
 import { retryOnConcurrencyLimit } from "../retry.js"
 import { withPath } from "../url.js"
-import { fixtureFiles } from "./site.js"
+import { fixtureFiles, fixtureHash } from "./site.js"
 
 /** Minimum surface we need from a sandbox handle. Keeps this unit testable. */
 type Sandbox = Awaited<ReturnType<SolariClient["sandboxes"]["create"]>>
@@ -61,9 +61,46 @@ export class FixtureHost {
   /**
    * Checkpoint the running VM. The sandbox keeps serving afterwards, so the
    * suite can run against the very state that was captured.
+   *
+   * Snapshots are named by the fixture's CONTENT hash and reused: the site is
+   * generated from fixed inputs, so every suite serving the same bytes can
+   * share one. Minting a fresh multi-gigabyte snapshot per run filled the
+   * plan's storage quota in a day and then failed every subsequent run with
+   * "Not snapshottable".
    */
-  async snapshot(name: string): Promise<string> {
-    return await this.sandbox.snapshot(name)
+  async snapshot(client: SolariClient, log: (m: string) => void): Promise<string | undefined> {
+    const name = snapshotName()
+    const existing = await findSnapshot(client, name)
+    if (existing) {
+      log(`reusing snapshot ${existing} — the fixture is unchanged`)
+      return existing
+    }
+    try {
+      const id = await this.sandbox.snapshot(name)
+      log(`snapshot ${id} — runs from this suite are replayable`)
+      return id
+    } catch (err) {
+      // A run without a snapshot is still a valid run; it just cannot be
+      // replayed. Losing the whole suite over it would be worse.
+      log(
+        `could not snapshot (${(err as Error).message}) — this suite will run but ` +
+          "not be replayable. `splitflap clean --snapshots` frees quota.",
+      )
+      // A failed checkpoint does not always leave the VM as it found it: a
+      // suite that hit the storage quota went on to fail every task, because
+      // the fixture had stopped serving what it served a moment earlier.
+      // Confirm the world is still there before running against it.
+      await this.ensureServing(log)
+      return undefined
+    }
+  }
+
+  /** Re-check the fixture, restarting its server if the VM was disturbed. */
+  private async ensureServing(log: (m: string) => void): Promise<void> {
+    if (await isHealthy(this.baseUrl)) return
+    log("fixture stopped serving — restarting it")
+    await startServer(this.sandbox)
+    await waitForHealthy(this.baseUrl, log)
   }
 
   /** Boot a private copy of a previous snapshot. This is what replay runs against. */
@@ -72,29 +109,43 @@ export class FixtureHost {
     snapshotId: string,
     log: (m: string) => void,
   ): Promise<FixtureHost> {
-    const sandbox = await retryOnConcurrencyLimit("fork", () =>
-      client.sandboxes.create({
-        fromSnapshot: snapshotId,
-        timeoutMs: BOOT_TIMEOUT_MS,
-        metadata: { app: "splitflap", role: "fixture-fork" },
-      }),
-      { log },
-    )
+    // Booting from a snapshot occasionally comes up with a control channel
+    // that closes as soon as it opens (`Control channel closed (1005)`), and
+    // that can surface on the first command rather than on connect. So the
+    // whole bring-up — connect, resolve, verify, restart if needed — retries
+    // as one unit; retrying only the connect leaves the later failure loose.
+    const { sandbox, baseUrl, resumed } = await withRetries(3, log, async () => {
+      const sb = await retryOnConcurrencyLimit("fork", () =>
+        client.sandboxes.create({
+          fromSnapshot: snapshotId,
+          timeoutMs: BOOT_TIMEOUT_MS,
+          metadata: { app: "splitflap", role: "fixture-fork" },
+        }),
+        { log },
+      )
+      try {
+        await sb.connect()
+        const url = await resolveUrl(sb)
+
+        // A RAM+disk snapshot often brings the HTTP server back with it, but
+        // not reliably — the same snapshot has forked both ways. Verify rather
+        // than assume, restart if needed, and report which happened so the
+        // dashboard does not quietly imply a guarantee that does not exist.
+        let wasResumed = true
+        if (!(await isHealthy(url))) {
+          log("forked VM did not resume its server — restarting it")
+          wasResumed = false
+          await startServer(sb)
+          await waitForHealthy(url, log)
+        }
+        return { sandbox: sb, baseUrl: url, resumed: wasResumed }
+      } catch (err) {
+        // Do not leak a half-booted VM into the plan's concurrency budget.
+        await sb.kill().catch(() => {})
+        throw err
+      }
+    })
     log(`forked ${sandbox.sandboxId} from ${snapshotId}`)
-    await sandbox.connect()
-
-    const baseUrl = await resolveUrl(sandbox)
-
-    // A RAM+disk snapshot should bring the HTTP server back with it. Verify
-    // rather than assume — and if it did not, restart it so replay still works
-    // (the run is still valid; only the "resumed" flag changes).
-    let resumed = true
-    if (!(await isHealthy(baseUrl))) {
-      log("forked VM did not resume its server — restarting it")
-      resumed = false
-      await startServer(sandbox)
-      await waitForHealthy(baseUrl, log)
-    }
     log(`fork serving at ${baseUrl}`)
     return new FixtureHost(sandbox, baseUrl, resumed)
   }
@@ -131,6 +182,44 @@ export class FixtureHost {
 
   async kill(): Promise<void> {
     await this.sandbox.kill().catch(() => {})
+  }
+}
+
+/** Retry a transient boot failure a few times before giving up. */
+async function withRetries<T>(
+  attempts: number,
+  log: (m: string) => void,
+  fn: () => Promise<T>,
+): Promise<T> {
+  let last: unknown
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn()
+    } catch (err) {
+      last = err
+      if (i < attempts) {
+        log(`fork attempt ${i} failed (${(err as Error).message}) — retrying`)
+        await new Promise((r) => setTimeout(r, 2_000 * i))
+      }
+    }
+  }
+  throw last
+}
+
+/** Snapshot name for the current fixture content. */
+export function snapshotName(): string {
+  return `splitflap-fixture-${fixtureHash()}`
+}
+
+async function findSnapshot(
+  client: SolariClient,
+  name: string,
+): Promise<string | undefined> {
+  try {
+    const { snapshots } = await client.sandboxes.listSnapshots({ limit: 100 })
+    return snapshots.find((s) => s.name === name)?.id
+  } catch {
+    return undefined
   }
 }
 

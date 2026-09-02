@@ -10,8 +10,10 @@
 import { SolariClient } from "@solarisdk/sdk"
 import { loadEnv, requireApiKey } from "./config.js"
 import { adapterByName } from "./adapters/index.js"
+import { resolveModel } from "./adapters/model.js"
 import { resolveFaults, FAULT_PRESETS } from "./faults/index.js"
-import { FixtureHost } from "./fixture/host.js"
+import { FixtureHost, snapshotName } from "./fixture/host.js"
+import { aggregate, describeAggregate } from "./report/aggregate.js"
 import { renderDashboard } from "./report/dashboard.js"
 import { replayRun } from "./replay/replay.js"
 import { runSuite } from "./run/runner.js"
@@ -68,15 +70,19 @@ const USAGE = `splitflap — browser-agent eval & replay harness on Solari
     --faults a,b             ${Object.keys(FAULT_PRESETS).join(" | ")}  (default: none)
     --parallel N             browsers in flight                   (default: 5)
     --seed N                 fault seed; same seed, same world    (default: 1)
+    --repeat N               run each task N times; same seed each (default: 1)
     --no-recovery            strip the tasks' login-wall recovery (regression demo)
     --keep-alive MIN         keep the dashboard up this long      (default: 10)
     --replay-timeout SEC     wait this long for each recording    (default: 30, 90 for LLM)
     --no-dashboard           skip publishing the dashboard
 
-  replay <runId> [--keep-fork]
-                             fork the fixture snapshot and re-run that trace
+  replay <runId> [--keep-fork] [--on-cache-miss live|error]
+                             fork the fixture snapshot and re-run the run:
+                             the agent itself when a cassette exists, else
+                             the recorded trace
   serve [suiteId]            re-publish a stored suite's dashboard
-  clean                      kill leftover splitflap sandboxes (frees plan slots)
+  clean [--snapshots]        kill leftover sandboxes; --snapshots also deletes
+                             splitflap fixture snapshots (frees storage quota)
   tasks                      list the golden tasks
   suites                     list stored suites
 `
@@ -89,6 +95,12 @@ async function cmdRun(args: Args): Promise<number> {
   const seed = num(args, "seed", 1)
   const parallel = num(args, "parallel", 5)
   const keepAliveMin = num(args, "keep-alive", 10)
+  const repeat = num(args, "repeat", 1)
+  if (repeat < 1) throw new Error("--repeat must be at least 1")
+
+  // Resolve the model up front: a missing key should fail before a sandbox
+  // and five browser sessions have been paid for.
+  const model = adapter.requiresModel ? resolveModel() : undefined
 
   const ids = str(args, "tasks", "").split(",").filter(Boolean)
   let tasks = ids.length ? ids.map(taskById) : TASKS
@@ -104,8 +116,8 @@ async function cmdRun(args: Args): Promise<number> {
   try {
     // Checkpoint the world BEFORE any run touches it. Every run in this suite
     // then shares one snapshot id, and replay forks from exactly that.
-    const snapshotId = await fixture.snapshot(`splitflap-fixture-${Date.now()}`)
-    log(`snapshot ${snapshotId} — runs from this suite are replayable\n`)
+    const snapshotId = await fixture.snapshot(client, log)
+    log("")
 
     suite = await runSuite({
       apiKey,
@@ -115,7 +127,9 @@ async function cmdRun(args: Args): Promise<number> {
       baseUrl: fixture.baseUrl,
       seed,
       parallel,
-      fixtureSnapshotId: snapshotId,
+      ...(snapshotId ? { fixtureSnapshotId: snapshotId } : {}),
+      repeat,
+      ...(model ? { model } : {}),
       // LLM adapters can run for minutes, and their recordings take longer to
       // upload than a ten-second scripted run's.
       replayTimeoutMs: num(args, "replay-timeout", adapter.requiresModel ? 90 : 30) * 1_000,
@@ -138,6 +152,7 @@ async function cmdRun(args: Args): Promise<number> {
   return suite.runs.every((r) => r.status === "pass") ? 0 : 1
 }
 
+
 async function cmdReplay(args: Args): Promise<number> {
   const apiKey = requireApiKey()
   const runId = args._[1]
@@ -148,15 +163,38 @@ async function cmdReplay(args: Args): Promise<number> {
 
   const client = new SolariClient({ apiKey })
   const result = await replayRun({
-    apiKey, client, run, keepFork: bool(args, "keep-fork"), log,
+    apiKey,
+    client,
+    run,
+    keepFork: bool(args, "keep-fork"),
+    // Default `live` so a replay completes and reports how far it diverged;
+    // `error` refuses to resample, for when you want a hard determinism gate.
+    missPolicy: str(args, "on-cache-miss", "live") === "error" ? "error" : "live",
+    log,
   })
   saveReplayResult(result)
 
   log("")
+  if (result.llm) {
+    const { cacheHits, cacheMisses, liveCalls } = result.llm
+    log(
+      `model: ${cacheHits} answered from the cassette, ${cacheMisses} miss(es)` +
+        `${liveCalls ? `, ${liveCalls} resampled live` : ""}`,
+    )
+  }
   if (result.deterministic) {
-    log(`DETERMINISTIC — replay matched the original on every compared field`)
+    log(
+      `DETERMINISTIC — replay matched the original on every compared field` +
+        (result.mode === "agent" ? ", with the agent re-run against its recorded responses" : ""),
+    )
   } else {
-    log(`DIVERGED on ${result.diffs.length} field(s):`)
+    if (result.llm && result.llm.cacheMisses > 0) {
+      log(
+        `DIVERGED — the agent asked ${result.llm.cacheMisses} question(s) it did not ask ` +
+          "when recording, so it took a different path",
+      )
+    }
+    if (result.diffs.length > 0) log(`DIVERGED on ${result.diffs.length} field(s):`)
     for (const d of result.diffs) {
       log(`  ${d.field}`)
       log(`    original: ${truncate(d.original)}`)
@@ -200,8 +238,32 @@ async function cmdServe(args: Args): Promise<number> {
  * by an interrupted suite keeps holding one. This is the "why can nothing
  * start?" escape hatch.
  */
-async function cmdClean(): Promise<number> {
+async function cmdClean(args: Args): Promise<number> {
   const client = new SolariClient({ apiKey: requireApiKey() })
+
+  if (bool(args, "snapshots")) {
+    // Fixture snapshots are multi-gigabyte. Keep the one matching the current
+    // fixture — it is the one future runs will reuse — and drop the rest.
+    const keep = snapshotName()
+    const { snapshots } = await client.sandboxes.listSnapshots({ limit: 100 })
+    const stale = snapshots.filter(
+      (s) => s.name?.startsWith("splitflap-fixture-") && s.name !== keep,
+    )
+    let freed = 0
+    for (const s of stale) {
+      try {
+        await client.sandboxes.deleteSnapshot(s.id)
+        freed += s.sizeBytes ?? 0
+        log(`deleted ${s.id} (${((s.sizeBytes ?? 0) / 1e9).toFixed(1)} GB)`)
+      } catch (e) {
+        // A snapshot with live children cannot be deleted; skip it.
+        log(`  kept ${s.id}: ${(e as Error).message}`)
+      }
+    }
+    log(`freed ${(freed / 1e9).toFixed(1)} GB across ${stale.length} snapshot(s)`)
+    log("note: runs whose snapshot was deleted can no longer be replayed")
+  }
+
   const { sandboxes } = await client.sandboxes.list({ limit: 100 })
   const ours = sandboxes.filter(
     (s) => s.metadata?.app === "splitflap" && s.state !== "gone",
@@ -245,6 +307,27 @@ function cmdSuites(): number {
 
 function printSummary(suite: Suite): void {
   log("")
+  const repeated = (suite.repeat ?? 1) > 1
+
+  if (repeated) {
+    // With repetitions the per-attempt line is noise; the rate is the finding.
+    const groups = aggregate(suite)
+    for (const g of groups) log(describeAggregate(g))
+    const flaky = groups.filter((g) => g.stability === "flaky")
+    const lying = groups.reduce((n, g) => n + g.falseSuccesses, 0)
+    log(
+      `\n${groups.filter((g) => g.stability === "stable-pass").length}/${groups.length} tasks ` +
+        `passed every attempt in ${(suite.durationMs / 1000).toFixed(1)}s`,
+    )
+    if (flaky.length > 0) {
+      log(`${flaky.length} flaky: ${flaky.map((g) => g.taskId).join(", ")}`)
+    }
+    if (lying > 0) {
+      log(`${lying} run(s) reported an answer while failing their checks`)
+    }
+    return
+  }
+
   for (const r of suite.runs) {
     const passed = r.assertions.filter((a) => a.ok).length
     log(
@@ -290,7 +373,7 @@ async function main(): Promise<number> {
     case "run": return cmdRun(args)
     case "replay": return cmdReplay(args)
     case "serve": return cmdServe(args)
-    case "clean": return cmdClean()
+    case "clean": return cmdClean(args)
     case "tasks": return cmdTasks()
     case "suites": return cmdSuites()
     default:

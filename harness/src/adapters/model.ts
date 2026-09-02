@@ -18,9 +18,19 @@ export interface ModelChoice {
   apiKey: string
   /** Set for OpenAI-compatible providers that are not OpenAI itself. */
   baseUrl?: string
+  /**
+   * Whether traffic to this model speaks the OpenAI chat-completions wire
+   * format. Only these can be recorded: the cassette proxy sits in front of a
+   * base URL, and a provider with its own protocol (Anthropic's, say) has no
+   * base URL to point at it.
+   */
+  openAiCompatible: boolean
+  /** Where the proxy forwards to. Undefined when not OpenAI-compatible. */
+  upstreamBaseUrl?: string
 }
 
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+export const OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 const DEFAULT_MODEL = "openrouter/anthropic/claude-sonnet-4.5"
 
@@ -54,11 +64,16 @@ export function resolveModel(explicit?: string): ModelChoice {
   const apiKey = process.env[envVar]
   if (!apiKey) throw new Error(`${id} needs ${envVar} — add it to harness/.env`)
 
+  const upstream =
+    provider === "openrouter" ? OPENROUTER_BASE_URL : provider === "openai" ? OPENAI_BASE_URL : undefined
+
   return {
     id,
     provider,
     model: rest.join("/"),
     apiKey,
+    openAiCompatible: upstream !== undefined,
+    ...(upstream ? { upstreamBaseUrl: upstream } : {}),
     ...(provider === "openrouter" ? { baseUrl: OPENROUTER_BASE_URL } : {}),
   }
 }

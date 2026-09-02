@@ -160,6 +160,23 @@ export interface RunResult {
   error?: string
   /** Bytes of rrweb NDJSON stored alongside the run, if the replay uploaded. */
   replayBytes?: number
+  /** Which repetition this is, when `--repeat` is used. 1-based. */
+  attempt?: number
+  /** Model traffic, when the adapter used one. */
+  llm?: LlmUsage
+}
+
+export interface LlmUsage {
+  model: string
+  /** Completions actually sent upstream. */
+  calls: number
+  /** Answered from the cassette — replay only. */
+  cacheHits?: number
+  /**
+   * Asked during replay but never asked when recording. A non-zero count is a
+   * divergence: the agent took a different path this time.
+   */
+  cacheMisses?: number
 }
 
 export interface Suite {
@@ -169,6 +186,8 @@ export interface Suite {
   seed: number
   adapter: string
   parallel: number
+  /** Repetitions per task; 1 unless `--repeat` was used. */
+  repeat?: number
   fixtureSnapshotId?: string
   baseUrl: string
   runs: RunResult[]
@@ -195,4 +214,8 @@ export interface ReplayResult {
   durationMs: number
   /** Whether the forked VM resumed with its server already running. */
   serverResumedFromSnapshot: boolean
+  /** How the run was reproduced. */
+  mode: "trace" | "agent"
+  /** Cassette accounting, when the agent was replayed against one. */
+  llm?: { cacheHits: number; cacheMisses: number; liveCalls: number }
 }

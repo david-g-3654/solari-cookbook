@@ -9,6 +9,13 @@ export interface AdapterRunContext {
   baseUrl: string
   /** Raw CDP endpoint of this run's session, for frameworks that attach themselves. */
   cdpEndpoint: string
+  /**
+   * OpenAI-compatible base URL the adapter MUST send model traffic to when
+   * set — the recording proxy. Sending elsewhere means the run cannot be
+   * replayed. The proxy holds the real key, so adapters using it never need
+   * to handle one.
+   */
+  modelBaseUrl?: string
   task: Task
   /** Shared executor — use it so replay re-runs identical code. */
   executor: StepExecutor
