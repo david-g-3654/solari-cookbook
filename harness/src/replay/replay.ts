@@ -199,7 +199,7 @@ export async function replayRun(opts: ReplayOptions): Promise<ReplayResult> {
       }
 
       const final = await captureFinalState(
-        page,
+        [page, ...context.pages().filter((p) => p !== page)],
         task.assertions.flatMap((a) => (a.kind === "selectorVisible" ? [a.selector] : [])),
       )
       finalUrl = final.url

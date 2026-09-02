@@ -180,3 +180,54 @@ describe("determinism", () => {
     assert.equal(b.status, "pass")
   })
 })
+
+describe("final-state capture when an agent works in another page", () => {
+  /**
+   * An LLM run produced three assertions that disagreed about the same run:
+   * the order reference was right, the URL was right, and
+   * `selectorVisible #order-confirmed` said the element was missing.
+   *
+   * The hypothesis is that the harness reads its final state from the page IT
+   * created, while a CDP-attached framework is free to open its own. This
+   * reproduces that shape with a stub adapter — no model, no cloud — so the
+   * answer does not cost a single token.
+   */
+  const stubWorkingInItsOwnPage = {
+    name: "stub-second-page",
+    requiresModel: false,
+    async run(ctx: Parameters<typeof scriptedAdapter.run>[0]) {
+      // Do the task properly, but in a page the harness does not hold.
+      const own = await ctx.page.context().newPage()
+      await own.goto(`${ctx.baseUrl}/checkout-done.html`, { waitUntil: "domcontentloaded" })
+      const ref = (await own.locator("#order-ref").innerText()).trim()
+      return { ref }
+    },
+  }
+
+  test("final state follows the agent into the page it opened", { skip: skip() }, async () => {
+    const context = await browser!.newContext()
+    try {
+      const out = await executeTask({
+        context,
+        task: taskById("checkout-form"),
+        baseUrl,
+        faults: [],
+        seed: 1,
+        adapter: stubWorkingInItsOwnPage,
+        cdpEndpoint: "",
+        log: () => {},
+      })
+
+      // The agent completed the task in its own page…
+      assert.match(String(out.answer.ref), /SF-ORDER-88231/)
+
+      // …and every assertion must now agree with that, rather than the element
+      // check contradicting the answer because it read an idle page.
+      const failed = out.assertions.filter((a) => !a.ok).map((a) => a.detail)
+      assert.equal(out.status, "pass", `assertions disagreed: ${failed.join("; ")}`)
+      assert.match(out.finalUrl, /checkout-done\.html/)
+    } finally {
+      await context.close()
+    }
+  })
+})

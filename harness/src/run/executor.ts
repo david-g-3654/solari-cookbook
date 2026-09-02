@@ -150,24 +150,47 @@ export class StepExecutor {
   }
 }
 
-/** Collect the final page state the scorer needs. */
+/**
+ * Collect the final page state the scorer needs.
+ *
+ * Takes every page in the context rather than just the one the harness
+ * created, because a CDP-attached framework is free to open its own — and
+ * when it does, reading only ours produces assertions that contradict each
+ * other on the same run: the agent's answer is right, and the element check
+ * says the page it came from does not exist.
+ *
+ * `pages[0]` should be the page that navigated most recently; URL and text
+ * come from it. Selector visibility is checked across all of them, because
+ * the question an assertion is asking is "did the agent reach a page showing
+ * this", not "is it on the tab we happen to hold".
+ */
 export async function captureFinalState(
-  page: Page,
+  pages: Page[],
   selectorsToCheck: string[],
 ): Promise<{ url: string; text: string; visibleSelectors: Set<string> }> {
-  const url = page.url()
-  const text = await page
+  const live = pages.filter((p) => !p.isClosed())
+  const primary = live[0]
+  if (!primary) return { url: "", text: "", visibleSelectors: new Set() }
+
+  const url = primary.url()
+  const text = await primary
     .locator("body")
     .innerText({ timeout: 5_000 })
     .catch(() => "")
+
   const visible = new Set<string>()
   for (const sel of selectorsToCheck) {
-    const ok = await page
-      .locator(sel)
-      .first()
-      .isVisible({ timeout: 1_000 })
-      .catch(() => false)
-    if (ok) visible.add(sel)
+    for (const page of live) {
+      const ok = await page
+        .locator(sel)
+        .first()
+        .isVisible({ timeout: 1_000 })
+        .catch(() => false)
+      if (ok) {
+        visible.add(sel)
+        break
+      }
+    }
   }
   return { url, text, visibleSelectors: visible }
 }

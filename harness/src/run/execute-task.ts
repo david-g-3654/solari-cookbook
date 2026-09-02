@@ -65,6 +65,17 @@ export async function executeTask(input: TaskExecutionInput): Promise<TaskExecut
     const page = await context.newPage()
     wireObservers(page, observation)
 
+    // An adapter may open pages of its own. Track which page navigated last so
+    // the final state is read from where the agent actually ended up.
+    let lastNavigated: Page = page
+    const watch = (p: Page) => {
+      p.on("framenavigated", (f) => {
+        if (f === p.mainFrame()) lastNavigated = p
+      })
+    }
+    watch(page)
+    context.on("page", watch)
+
     // The recovery handler needs the executor and the executor needs the
     // handler, so the handler takes a lazy getter rather than the instance.
     let executor!: StepExecutor
@@ -83,7 +94,9 @@ export async function executeTask(input: TaskExecutionInput): Promise<TaskExecut
       log,
     })
 
-    const final = await captureFinalState(page, selectorsUnderTest(task))
+    // Most-recently-navigated first, then everything else in the context.
+    const candidates = [lastNavigated, ...context.pages().filter((p) => p !== lastNavigated)]
+    const final = await captureFinalState(candidates, selectorsUnderTest(task))
     finalUrl = final.url
     finalText = final.text
     visibleSelectors = final.visibleSelectors
