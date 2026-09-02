@@ -119,7 +119,7 @@ npm run splitflap -- run --faults loginWall --no-recovery
 | --- | --- | --- |
 | `scripted` | nothing | Deterministic, no model. The control, and what CI runs. |
 | `browser-use` | `pip install browser-use` (Python 3.11+) + a model key | Runs out-of-process over a stdin/stdout JSON bridge. **Verified live.** |
-| `stagehand` | `npm i @browserbasehq/stagehand` (Node ≥22.18) + a model key | Attaches to the same session over CDP. |
+| `stagehand` | `npm i @browserbasehq/stagehand` (Node ≥22.18) + a model key | **4.x cannot attach to a Solari browser** — see Status. |
 
 Set the model with `SPLITFLAP_MODEL` as `provider/model`:
 
@@ -236,8 +236,22 @@ reaction is the interesting part:
 
 No recovery script was involved. It improvised, and the harness caught it.
 
-**Stagehand is written but unrun**: it requires Node ≥22.18.0, and npm silently
-skips it as an optional dependency on anything older.
+**Stagehand 4.x cannot drive a Solari cloud browser.** Not a bug on either
+side — an architectural mismatch, found by running it:
+
+> This Chrome build does not support `Extensions.loadUnpacked`.
+> Launch with `--load-extension` and connect using `extensionId` instead.
+
+Stagehand 4 drives the page through a Chrome extension it loads over CDP.
+Solari's browser build does not support that command, and the extension has to
+be present at launch — a launch that belongs to Solari. The adapter now fails
+with that explanation rather than the raw CDP error, and honours
+`SPLITFLAP_STAGEHAND_EXTENSION_ID` if an image ever ships the extension.
+
+Stagehand **3.x** drives Playwright over plain CDP with no extension, so
+pinning to 3.x would work. Its API differs enough (`new Stagehand({ env,
+localBrowserLaunchOptions: { cdpUrl } })`, `init()`, `stagehand.page.act()`,
+and an `llmClient` for the model) that the adapter would need rewriting.
 
 ## What the live run taught us
 

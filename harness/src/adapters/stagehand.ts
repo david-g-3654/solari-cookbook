@@ -5,8 +5,23 @@
  * it drives the browser the harness already prepared. That matters: the fault
  * interception is installed on the browser CONTEXT, not on our page, precisely
  * so that pages Stagehand opens for itself still get the injected latency,
- * 5xx and login wall. An adapter that connected to a browser of its own would
- * be running a different experiment.
+ * 5xx and login wall. Verified with the Browser-Use adapter, whose own
+ * CDP-driven navigation triggered the injected login wall.
+ *
+ * KNOWN INCOMPATIBILITY (Stagehand 4.x + Solari cloud browsers).
+ * Stagehand 4 drives the page through a Chrome extension, which it loads over
+ * CDP with `Extensions.loadUnpacked`. Solari's browser build does not support
+ * that command, so `Stagehand.create()` fails:
+ *
+ *     This Chrome build does not support Extensions.loadUnpacked.
+ *     Launch with --load-extension and connect using extensionId instead.
+ *
+ * The extension has to be present at browser launch, and the launch belongs to
+ * Solari — so there is nothing to fix on this side. Two ways forward:
+ *   - if a Solari image ever ships the extension, set
+ *     SPLITFLAP_STAGEHAND_EXTENSION_ID and this adapter will use it;
+ *   - Stagehand 3.x drives Playwright over plain CDP with no extension, so
+ *     pinning to 3.x would work, at the cost of a different API surface.
  *
  * The trace this produces is coarser than the scripted adapter's — Stagehand
  * reports the action it took, not a replayable selector script — so `replay`
@@ -38,7 +53,24 @@ export const stagehandAdapter: Adapter = {
     // the same place; what it does from there is up to the model.
     ctx.emit(await ctx.executor.trace({ do: "goto", path: ctx.task.path }, 0, {}))
 
-    const browser = await sh.localBrowser.connect({ cdpUrl: ctx.cdpEndpoint })
+    const extensionId = process.env.SPLITFLAP_STAGEHAND_EXTENSION_ID
+    const browser = await sh.localBrowser
+      .connect({
+        cdpUrl: ctx.cdpEndpoint,
+        ...(extensionId ? { extensionId } : {}),
+      })
+      .catch((err: Error) => {
+        // Turn the raw CDP complaint into something actionable.
+        if (/loadUnpacked|--load-extension/i.test(err.message)) {
+          throw new Error(
+            "Stagehand 4.x needs its Chrome extension loaded at browser launch, and " +
+              "Solari's browser build does not support loading it over CDP. Use " +
+              "--adapter browser-use, or set SPLITFLAP_STAGEHAND_EXTENSION_ID if the " +
+              "image ships the extension. See src/adapters/stagehand.ts.",
+          )
+        }
+        throw err
+      })
     const stagehand = await sh.Stagehand.create({
       browser,
       // Native providers use Stagehand's own client; OpenRouter goes through
