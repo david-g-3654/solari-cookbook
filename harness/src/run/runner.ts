@@ -207,6 +207,7 @@ async function runOne(
     ...(replayBytes !== undefined ? { replayBytes } : {}),
     ...(opts.repeat > 1 ? { attempt } : {}),
     ...(llm ? { llm } : {}),
+    ...(result.agentReport ? { agentReport: result.agentReport } : {}),
   }
 }
 

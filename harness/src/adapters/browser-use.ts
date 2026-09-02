@@ -24,6 +24,12 @@ interface BridgeResponse {
   steps?: string[]
   raw?: string
   error?: string
+  report?: {
+    done: boolean
+    claimedSuccess: boolean | null
+    hasErrors?: boolean
+    steps?: number
+  }
 }
 
 export const browserUseAdapter: Adapter = {
@@ -78,6 +84,7 @@ export const browserUseAdapter: Adapter = {
       ),
     )
 
+    if (res.report) ctx.reportAgent?.(res.report)
     return res.answer ?? {}
   },
 }

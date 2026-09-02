@@ -164,6 +164,23 @@ export interface RunResult {
   attempt?: number
   /** Model traffic, when the adapter used one. */
   llm?: LlmUsage
+  /** What the agent said about its own run, when the framework reports it. */
+  agentReport?: AgentReport
+}
+
+/**
+ * The agent's self-assessment, which is a different question from whether it
+ * actually did the job. An agent that fails and says so is manageable; one
+ * that fails and reports success is the dangerous case, and the two must not
+ * share a cell on a dashboard.
+ */
+export interface AgentReport {
+  /** The agent reached a terminal state rather than running out of steps. */
+  done: boolean
+  /** The agent's own verdict. `null` when it never decided. */
+  claimedSuccess: boolean | null
+  hasErrors?: boolean
+  steps?: number
 }
 
 export interface LlmUsage {

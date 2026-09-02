@@ -1,6 +1,6 @@
 import { test, describe } from "node:test"
 import assert from "node:assert/strict"
-import { aggregate, describeAggregate } from "../src/report/aggregate.js"
+import { aggregate, describeAggregate, describeFailureModes } from "../src/report/aggregate.js"
 import type { RunResult, Suite } from "../src/types.js"
 
 const run = (over: Partial<RunResult>): RunResult => ({
@@ -76,6 +76,23 @@ describe("false success", () => {
     assert.equal(a!.falseSuccesses, 1)
   })
 
+  test("the agent's own verdict beats the answer heuristic", () => {
+    // It produced an answer but told us it had not succeeded. That is an
+    // honest failure, and must not be counted as a confabulation.
+    const [a] = aggregate(
+      suite([
+        run({
+          status: "fail",
+          answer: { skus: ["SF-1000"] },
+          agentReport: { done: true, claimedSuccess: false },
+        }),
+      ]),
+    )
+    assert.equal(a!.falseSuccesses, 0)
+    assert.equal(a!.failureModes.gaveUp, 1)
+    assert.equal(a!.failureModes.falseSuccess, 0)
+  })
+
   test("an agent that errored out is NOT a false success", () => {
     // Failing loudly is manageable; claiming success is not. Keep them apart.
     const [a] = aggregate(
@@ -87,6 +104,45 @@ describe("false success", () => {
   test("a passing run is never a false success", () => {
     const [a] = aggregate(suite([run({ status: "pass", answer: { ref: "SF-ORDER-88231" } })]))
     assert.equal(a!.falseSuccesses, 0)
+  })
+})
+
+describe("failure modes", () => {
+  test("failures split by what the agent believed about itself", () => {
+    const [a] = aggregate(
+      suite([
+        run({ status: "pass" }),
+        run({ status: "fail", agentReport: { done: true, claimedSuccess: true } }),
+        run({ status: "fail", agentReport: { done: true, claimedSuccess: true } }),
+        run({ status: "fail", agentReport: { done: true, claimedSuccess: false } }),
+        run({ status: "fail", agentReport: { done: false, claimedSuccess: null } }),
+        run({ status: "error", error: "timeout" }),
+      ]),
+    )
+    assert.deepEqual(a!.failureModes, {
+      falseSuccess: 2, gaveUp: 1, incomplete: 1, errored: 1,
+    })
+  })
+
+  test("a clean sweep has no failure modes to report", () => {
+    const [a] = aggregate(suite([run({ status: "pass" }), run({ status: "pass" })]))
+    assert.deepEqual(a!.failureModes, {
+      falseSuccess: 0, gaveUp: 0, incomplete: 0, errored: 0,
+    })
+    assert.equal(describeFailureModes(a!.failureModes), "")
+  })
+
+  test("the summary reads as a quotable sentence", () => {
+    const [a] = aggregate(
+      suite([
+        run({ status: "fail", agentReport: { done: true, claimedSuccess: true } }),
+        run({ status: "fail", agentReport: { done: false, claimedSuccess: null } }),
+      ]),
+    )
+    assert.equal(
+      describeFailureModes(a!.failureModes),
+      "1 reported success while failing, 1 stopped without a verdict",
+    )
   })
 })
 

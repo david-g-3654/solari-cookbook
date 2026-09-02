@@ -17,7 +17,7 @@ import { makeRecoveryHandler } from "./recovery.js"
 import { scoreAll, statusOf } from "./score.js"
 import type { Adapter } from "../adapters/types.js"
 import type {
-  AssertionResult, FaultSpec, Observation, RunStatus, Task, TraceStep,
+  AgentReport, AssertionResult, FaultSpec, Observation, RunStatus, Task, TraceStep,
 } from "../types.js"
 
 export interface TaskExecutionInput {
@@ -42,6 +42,8 @@ export interface TaskExecutionOutput {
   status: RunStatus
   error?: string
   finalUrl: string
+  /** The agent's own verdict, when the framework reports one. */
+  agentReport?: AgentReport
 }
 
 export async function executeTask(input: TaskExecutionInput): Promise<TaskExecutionOutput> {
@@ -52,6 +54,7 @@ export async function executeTask(input: TaskExecutionInput): Promise<TaskExecut
   const chain = new FaultChain({ faults: input.faults, seed: input.seed })
 
   let answer: Record<string, unknown> = {}
+  let agentReport: AgentReport | undefined
   let error: string | undefined
   let finalUrl = ""
   let finalText = ""
@@ -76,6 +79,7 @@ export async function executeTask(input: TaskExecutionInput): Promise<TaskExecut
       task,
       executor,
       emit: (t) => trace.push(t),
+      reportAgent: (r) => { agentReport = r },
       log,
     })
 
@@ -104,6 +108,7 @@ export async function executeTask(input: TaskExecutionInput): Promise<TaskExecut
     assertions,
     status: statusOf(assertions, Boolean(error)),
     ...(error ? { error } : {}),
+    ...(agentReport ? { agentReport } : {}),
     finalUrl,
   }
 }

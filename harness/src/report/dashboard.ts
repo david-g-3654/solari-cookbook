@@ -11,7 +11,7 @@
  */
 import type { AssertionResult, RunResult, Suite, TraceStep } from "../types.js"
 import type { ReplayResult } from "../types.js"
-import { aggregate, type TaskAggregate } from "./aggregate.js"
+import { aggregate, describeFailureModes, type TaskAggregate } from "./aggregate.js"
 
 /**
  * Preview URLs carry an access token in the query. The dashboard is a page
@@ -208,6 +208,19 @@ function runRow(run: RunResult, replay?: ReplayResult): string {
     }</td></tr>
     <tr><td>session</td><td class="dim">${esc(run.sessionId ?? "—")}</td></tr>
     ${
+      run.agentReport
+        ? `<tr><td>agent said</td><td class="${
+            run.agentReport.claimedSuccess === true && run.status !== "pass" ? "no" : "dim"
+          }">${
+            run.agentReport.claimedSuccess === true
+              ? "succeeded"
+              : run.agentReport.claimedSuccess === false
+                ? "did not succeed"
+                : "never reached a verdict"
+          }${run.agentReport.steps ? ` · ${run.agentReport.steps} steps` : ""}</td></tr>`
+        : ""
+    }
+    ${
       run.llm
         ? `<tr><td>model</td><td class="dim">${esc(run.llm.model)} · ${run.llm.calls} call(s)${
             run.attempt ? ` · attempt ${run.attempt}` : ""
@@ -238,20 +251,30 @@ function taskGroup(group: TaskAggregate, replays: Record<string, ReplayResult>):
     group.stability === "stable-pass" ? "pass" : group.stability === "flaky" ? "flaky" : "fail"
   const pct = Math.round(group.passRate * 100)
   const worst = group.unreliableAssertions[0]
+  const modes = describeFailureModes(group.failureModes)
   return `<details class="row">
 <summary>
   <span class="flap ${label}">${label}</span>
   <span class="title">${esc(group.taskId)}${
-    worst ? ` <small>· ${esc(worst.kind)} failed ${worst.failures}×</small>` : ""
-  }${
-    group.falseSuccesses > 0
-      ? ` <small class="warn">· ${group.falseSuccesses} answered while failing</small>`
-      : ""
+    modes ? ` <small>· ${esc(modes)}</small>` : ""
   }</span>
   <span class="rate">${group.passes}/${group.attempts} passed<span class="bar"><i style="width:${pct}%"></i></span></span>
   <span class="stat">${(group.medianDurationMs / 1000).toFixed(1)}s median</span>
 </summary>
 <div class="body">
+  ${
+    group.falseSuccesses > 0
+      ? `<p class="hint warn">${group.falseSuccesses} of ${group.attempts} attempts reported ` +
+        `success while failing their checks — an agent that fails loudly is manageable, ` +
+        `one that reports a result it did not achieve is not.</p>`
+      : ""
+  }
+  ${
+    worst
+      ? `<p class="hint">most unreliable assertion: <code>${esc(worst.kind)}</code> ` +
+        `failed ${worst.failures} of ${group.attempts}</p>`
+      : ""
+  }
 ${group.runs.map((r) => runRow(r, replays[r.runId])).join("\n")}
 </div>
 </details>`

@@ -1,6 +1,6 @@
 /** The contract every agent framework is wrapped in. */
 import type { Page } from "patchright-core"
-import type { Task, TraceStep } from "../types.js"
+import type { AgentReport, Task, TraceStep } from "../types.js"
 import type { StepExecutor } from "../run/executor.js"
 
 export interface AdapterRunContext {
@@ -22,6 +22,8 @@ export interface AdapterRunContext {
   /** Record an action into the run's trace, in execution order. */
   emit(step: TraceStep): void
   log(msg: string): void
+  /** Record the agent's own verdict on its run, if the framework reports one. */
+  reportAgent?(report: AgentReport): void
 }
 
 export interface Adapter {

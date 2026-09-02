@@ -35,6 +35,17 @@ def emit(payload: dict) -> None:
     sys.stdout.flush()
 
 
+def _call(obj, name):
+    """Call an accessor if the installed version has it, else None."""
+    fn = getattr(obj, name, None)
+    if fn is None:
+        return None
+    try:
+        return fn()
+    except Exception:
+        return None
+
+
 def build_llm(cfg: dict):
     """Build the chat model the TS side resolved.
 
@@ -134,7 +145,25 @@ async def main() -> int:
         if hasattr(history, "action_names"):
             steps = [str(a) for a in history.action_names()]
 
-        emit({"ok": True, "answer": parse_answer(raw, extract), "steps": steps, "raw": raw})
+        # The agent's OWN verdict on whether it succeeded, which is a different
+        # question from whether it did. `is_successful()` is None until the
+        # agent finishes, True/False once it decides. Comparing that against
+        # the assertions is what separates an agent that failed loudly from one
+        # that reported an order reference for an order it never placed.
+        report = {
+            "done": bool(_call(history, "is_done")),
+            "claimedSuccess": _call(history, "is_successful"),
+            "hasErrors": bool(_call(history, "has_errors")),
+            "steps": len(steps),
+        }
+
+        emit({
+            "ok": True,
+            "answer": parse_answer(raw, extract),
+            "steps": steps,
+            "raw": raw,
+            "report": report,
+        })
         return 0
     except Exception as err:  # surfaced as a run error, not a harness crash
         emit({"ok": False, "error": f"{type(err).__name__}: {err}"})

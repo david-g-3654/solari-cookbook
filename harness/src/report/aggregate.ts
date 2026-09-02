@@ -24,9 +24,22 @@ export interface TaskAggregate {
   /** Assertions that failed at least once, most frequent first. */
   unreliableAssertions: Array<{ kind: string; failures: number }>
   medianDurationMs: number
-  /** True when the agent claimed success on an attempt that failed its checks. */
+  /** How the failing attempts failed. The distinction is the whole point. */
+  failureModes: FailureModes
+  /** Attempts where the agent reported success on a run that failed its checks. */
   falseSuccesses: number
   runs: RunResult[]
+}
+
+export interface FailureModes {
+  /** The agent said it succeeded. It did not. The dangerous one. */
+  falseSuccess: number
+  /** The agent finished and said it had NOT succeeded — an honest failure. */
+  gaveUp: number
+  /** The agent never reached a verdict: out of steps, or stopped silently. */
+  incomplete: number
+  /** The run threw before it could report anything. */
+  errored: number
 }
 
 export function aggregate(suite: Suite): TaskAggregate[] {
@@ -56,6 +69,7 @@ export function aggregate(suite: Suite): TaskAggregate[] {
           .map(([kind, n]) => ({ kind, failures: n }))
           .sort((a, b) => b.failures - a.failures),
         medianDurationMs: median(runs.map((r) => r.durationMs)),
+        failureModes: classifyFailures(runs),
         falseSuccesses: runs.filter(claimedSuccessButFailed).length,
         runs: [...runs].sort((a, b) => (a.attempt ?? 1) - (b.attempt ?? 1)),
       }
@@ -71,12 +85,38 @@ function classify(passes: number, attempts: number): Stability {
 }
 
 /**
- * An agent that finished cleanly and produced an answer, on a run whose
- * assertions say it did not do the job. Distinct from erroring out: an agent
- * that fails loudly is manageable, one that reports success is not.
+ * An agent that reported success on a run whose assertions say otherwise.
+ *
+ * Prefers the framework's own verdict when it reports one; falls back to
+ * "produced an answer and did not error", which is the best available proxy
+ * for an adapter that reports nothing.
  */
 function claimedSuccessButFailed(run: RunResult): boolean {
-  return run.status === "fail" && !run.error && Object.keys(run.answer).length > 0
+  if (run.status !== "fail") return false
+  if (run.agentReport) return run.agentReport.claimedSuccess === true
+  return !run.error && Object.keys(run.answer).length > 0
+}
+
+function classifyFailures(runs: RunResult[]): FailureModes {
+  const modes: FailureModes = { falseSuccess: 0, gaveUp: 0, incomplete: 0, errored: 0 }
+  for (const run of runs) {
+    if (run.status === "pass") continue
+    if (run.status === "error") { modes.errored++; continue }
+    if (claimedSuccessButFailed(run)) { modes.falseSuccess++; continue }
+    if (run.agentReport?.claimedSuccess === false) { modes.gaveUp++; continue }
+    modes.incomplete++
+  }
+  return modes
+}
+
+/** Quotable one-liner: how a task's failures broke down. */
+export function describeFailureModes(m: FailureModes): string {
+  const parts: string[] = []
+  if (m.falseSuccess) parts.push(`${m.falseSuccess} reported success while failing`)
+  if (m.gaveUp) parts.push(`${m.gaveUp} gave up`)
+  if (m.incomplete) parts.push(`${m.incomplete} stopped without a verdict`)
+  if (m.errored) parts.push(`${m.errored} errored`)
+  return parts.join(", ")
 }
 
 function median(values: number[]): number {
@@ -92,9 +132,11 @@ export function describeAggregate(a: TaskAggregate): string {
   const label =
     a.stability === "stable-pass" ? "PASS" : a.stability === "stable-fail" ? "FAIL" : "FLAKY"
   const worst = a.unreliableAssertions[0]
+  const modes = describeFailureModes(a.failureModes)
   return (
     `  ${label.padEnd(6)} ${a.taskId.padEnd(18)} ${rate.padStart(5)} passed  ` +
     `${(a.medianDurationMs / 1000).toFixed(1)}s median` +
-    (a.stability === "stable-pass" || !worst ? "" : `  · ${worst.kind} failed ${worst.failures}×`)
+    (modes ? `\n         ${modes}` : "") +
+    (a.stability === "stable-pass" || !worst ? "" : `\n         ${worst.kind} failed ${worst.failures}×`)
   )
 }
