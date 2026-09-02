@@ -15,33 +15,22 @@
 import type { Adapter, AdapterRunContext } from "./types.js"
 import type { TraceStep } from "../types.js"
 import { loadStagehand, loadZod } from "./optional-deps.js"
-
-/** Default is cheap and fast; override with SPLITFLAP_MODEL. */
-const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
+import { resolveModel } from "./model.js"
+import { stagehandModel } from "./openrouter-llm.js"
 
 /** How many `act` turns before we call the task unfinished. */
 const MAX_ACTS = 8
-
-function modelConfig(): { modelName: string; apiKey: string } {
-  const modelName = process.env.SPLITFLAP_MODEL ?? DEFAULT_MODEL
-  const provider = modelName.split("/")[0]
-  const apiKey =
-    provider === "openai" ? process.env.OPENAI_API_KEY : process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    throw new Error(
-      `the stagehand adapter needs a model key: set ${
-        provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
-      } (or pick another SPLITFLAP_MODEL)`,
-    )
-  }
-  return { modelName, apiKey }
-}
 
 export const stagehandAdapter: Adapter = {
   name: "stagehand",
   requiresModel: true,
 
   async run(ctx: AdapterRunContext): Promise<Record<string, unknown>> {
+    // Resolve the model BEFORE launching anything: a missing key should not
+    // cost a browser session.
+    const model = resolveModel()
+    ctx.log(`stagehand via ${model.id}`)
+
     const sh = await loadStagehand()
     const z = await loadZod()
 
@@ -50,7 +39,12 @@ export const stagehandAdapter: Adapter = {
     ctx.emit(await ctx.executor.trace({ do: "goto", path: ctx.task.path }, 0, {}))
 
     const browser = await sh.localBrowser.connect({ cdpUrl: ctx.cdpEndpoint })
-    const stagehand = await sh.Stagehand.create({ browser, model: modelConfig() })
+    const stagehand = await sh.Stagehand.create({
+      browser,
+      // Native providers use Stagehand's own client; OpenRouter goes through
+      // the `generate` bridge, since Stagehand offers no base-URL override.
+      model: stagehandModel(model),
+    })
 
     const answer: Record<string, unknown> = {}
     let index = 1

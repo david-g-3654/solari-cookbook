@@ -10,6 +10,8 @@ exactly the faults the scripted baseline met.
 
 Protocol
     stdin   one JSON object: {cdpUrl, goal, extract, model, maxSteps}
+            where model is {provider, model, apiKey, baseUrl?} — resolved on
+            the TypeScript side so there is one source of truth for it
     stdout  agent logs, then one final line:
             __SPLITFLAP__{"ok": true, "answer": {...}, "steps": [...]}
 
@@ -33,18 +35,25 @@ def emit(payload: dict) -> None:
     sys.stdout.flush()
 
 
-def build_llm(model: str):
-    """Pick a chat model from the id, e.g. 'anthropic/claude-sonnet-4-5'."""
-    provider, _, name = model.partition("/")
-    if provider == "openai":
+def build_llm(cfg: dict):
+    """Build the chat model the TS side resolved.
+
+    OpenRouter speaks the OpenAI wire format, so it is just ChatOpenAI pointed
+    at a different base URL — one key, any model.
+    """
+    provider = cfg["provider"]
+    if provider in ("openai", "openrouter"):
         from browser_use.llm import ChatOpenAI
 
-        return ChatOpenAI(model=name or "gpt-4.1-mini")
+        kwargs = {"model": cfg["model"], "api_key": cfg["apiKey"]}
+        if cfg.get("baseUrl"):
+            kwargs["base_url"] = cfg["baseUrl"]
+        return ChatOpenAI(**kwargs)
     if provider == "anthropic":
         from browser_use.llm import ChatAnthropic
 
-        return ChatAnthropic(model=name or "claude-sonnet-4-5")
-    raise ValueError(f"unsupported model provider {provider!r} (use openai/… or anthropic/…)")
+        return ChatAnthropic(model=cfg["model"], api_key=cfg["apiKey"])
+    raise ValueError(f"unsupported model provider {provider!r}")
 
 
 def answer_prompt(extract: dict | None) -> str:
@@ -109,7 +118,7 @@ async def main() -> int:
     try:
         agent = Agent(
             task=req["goal"] + answer_prompt(extract),
-            llm=build_llm(req.get("model") or "anthropic/claude-sonnet-4-5"),
+            llm=build_llm(req["model"]),
             browser_session=session,
         )
         history = await agent.run(max_steps=req.get("maxSteps", 25))

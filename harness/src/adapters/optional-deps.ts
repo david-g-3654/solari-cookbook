@@ -24,10 +24,8 @@ export interface StagehandInstance {
 export interface StagehandModule {
   localBrowser: { connect(opts: { cdpUrl: string }): Promise<unknown> }
   Stagehand: {
-    create(opts: {
-      browser: unknown
-      model: { modelName: string; apiKey: string }
-    }): Promise<StagehandInstance>
+    /** `model` is either `{ modelName, apiKey }` or a `{ generate }` ClientLLM. */
+    create(opts: { browser: unknown; model: unknown }): Promise<StagehandInstance>
   }
 }
 

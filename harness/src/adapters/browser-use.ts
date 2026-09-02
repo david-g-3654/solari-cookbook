@@ -14,11 +14,10 @@ import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import type { Adapter, AdapterRunContext } from "./types.js"
 import type { TraceStep } from "../types.js"
+import { resolveModel } from "./model.js"
 
 const SENTINEL = "__SPLITFLAP__"
 const BRIDGE = join(dirname(fileURLToPath(import.meta.url)), "browser_use_bridge.py")
-const DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
-
 interface BridgeResponse {
   ok: boolean
   answer?: Record<string, unknown>
@@ -32,8 +31,10 @@ export const browserUseAdapter: Adapter = {
   requiresModel: true,
 
   async run(ctx: AdapterRunContext): Promise<Record<string, unknown>> {
-    const model = process.env.SPLITFLAP_MODEL ?? DEFAULT_MODEL
-    requireModelKey(model)
+    // Resolve the model BEFORE launching anything: a missing key should not
+    // cost a browser session.
+    const model = resolveModel()
+    ctx.log(`browser-use via ${model.id}`)
 
     // Same starting page as every other adapter, so the comparison is fair.
     ctx.emit(await ctx.executor.trace({ do: "goto", path: ctx.task.path }, 0, {}))
@@ -43,7 +44,12 @@ export const browserUseAdapter: Adapter = {
       cdpUrl: ctx.cdpEndpoint,
       goal: ctx.task.goal,
       extract: ctx.task.extract ?? null,
-      model,
+      model: {
+        provider: model.provider,
+        model: model.model,
+        apiKey: model.apiKey,
+        ...(model.baseUrl ? { baseUrl: model.baseUrl } : {}),
+      },
       maxSteps: 25,
     }, ctx.log)
 
@@ -66,19 +72,13 @@ export const browserUseAdapter: Adapter = {
   },
 }
 
-function requireModelKey(model: string): void {
-  const provider = model.split("/")[0]
-  const envVar = provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"
-  if (!process.env[envVar]) {
-    throw new Error(`the browser-use adapter needs a model key: set ${envVar}`)
-  }
-}
-
 function runBridge(
   request: unknown,
   log: (m: string) => void,
 ): Promise<BridgeResponse> {
   return new Promise((resolve, reject) => {
+    // browser-use needs Python 3.11+; point SPLITFLAP_PYTHON at a venv if the
+    // default `python3` on PATH is older (`.venv/bin/python` is the usual one).
     const python = process.env.SPLITFLAP_PYTHON ?? "python3"
     const child = spawn(python, [BRIDGE], { stdio: ["pipe", "pipe", "pipe"] })
 

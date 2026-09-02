@@ -70,6 +70,7 @@ const USAGE = `splitflap — browser-agent eval & replay harness on Solari
     --seed N                 fault seed; same seed, same world    (default: 1)
     --no-recovery            strip the tasks' login-wall recovery (regression demo)
     --keep-alive MIN         keep the dashboard up this long      (default: 10)
+    --replay-timeout SEC     wait this long for each recording    (default: 30, 90 for LLM)
     --no-dashboard           skip publishing the dashboard
 
   replay <runId> [--keep-fork]
@@ -115,7 +116,9 @@ async function cmdRun(args: Args): Promise<number> {
       seed,
       parallel,
       fixtureSnapshotId: snapshotId,
-      replayTimeoutMs: 30_000,
+      // LLM adapters can run for minutes, and their recordings take longer to
+      // upload than a ten-second scripted run's.
+      replayTimeoutMs: num(args, "replay-timeout", adapter.requiresModel ? 90 : 30) * 1_000,
       log,
     })
     saveSuite(suite)

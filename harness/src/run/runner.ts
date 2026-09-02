@@ -173,7 +173,9 @@ function erroredRun(error: string): TaskExecutionOutput {
 
 /**
  * The rrweb upload happens asynchronously AFTER release, so the first poll
- * usually 404s even on a perfectly good recording.
+ * usually 404s even on a perfectly good recording. Long runs need a longer
+ * window — an LLM adapter can drive a session for minutes, and that recording
+ * takes correspondingly longer to land than a 10-second scripted one.
  */
 async function fetchReplay(
   solari: Solari,
@@ -199,7 +201,10 @@ async function fetchReplay(
       }
     }
   }
-  log("no replay after polling — was the session created with recording:true?")
+  log(
+    `no replay after ${Math.round(timeoutMs / 1000)}s — it may still be uploading; ` +
+      `re-fetch with the session id (${sessionId})`,
+  )
   return undefined
 }
 

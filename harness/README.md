@@ -118,16 +118,30 @@ npm run splitflap -- run --faults loginWall --no-recovery
 | Adapter | Needs | Notes |
 | --- | --- | --- |
 | `scripted` | nothing | Deterministic, no model. The control, and what CI runs. |
-| `stagehand` | `npm i @browserbasehq/stagehand` + a model key | Attaches to the same session over CDP. |
-| `browser-use` | `pip install browser-use` + a model key | Python; runs out-of-process over a stdin/stdout JSON bridge. |
+| `browser-use` | `pip install browser-use` (Python 3.11+) + a model key | Runs out-of-process over a stdin/stdout JSON bridge. **Verified live.** |
+| `stagehand` | `npm i @browserbasehq/stagehand` (Node ≥22.18) + a model key | Attaches to the same session over CDP. |
+
+Set the model with `SPLITFLAP_MODEL` as `provider/model`:
+
+```bash
+SPLITFLAP_MODEL=openrouter/anthropic/claude-sonnet-4.5   # OPENROUTER_API_KEY
+SPLITFLAP_MODEL=anthropic/claude-sonnet-4-5              # ANTHROPIC_API_KEY
+SPLITFLAP_MODEL=openai/gpt-4.1-mini                      # OPENAI_API_KEY
+```
+
+OpenRouter gets special handling because it is one key for every model, which
+is how people usually have access to several. Browser-Use takes it directly —
+it is the OpenAI wire format with a different base URL. Stagehand does not:
+its model config names only openai, anthropic, google, groq and cerebras, with
+no base-URL override. So `openrouter/…` is routed through Stagehand's
+`ClientLLM` escape hatch instead — see
+[`openrouter-llm.ts`](src/adapters/openrouter-llm.ts), which maps its message,
+tool-call and JSON-schema contract onto OpenRouter's chat completions.
 
 All three attach to the **same** Solari session the harness prepared, so every
 adapter meets the same injected faults, starts on the same page, and is scored
 by the same assertions against the same end state. That is what makes the
 dashboard's columns comparable.
-
-Set the model with `SPLITFLAP_MODEL` (default `anthropic/claude-sonnet-4-5`;
-`openai/…` also works).
 
 ## Commands
 
@@ -202,12 +216,28 @@ DETERMINISTIC — replay matched the original on every compared field
 Plus, offline: `npm test` (18 unit tests) and `npm run test:integration`
 (12 tests driving the real harness through a real browser).
 
-**Not yet verified: the two LLM adapters**, which need a model key. Both are
-written against the frameworks' real APIs, but neither has been run. The open
-question there is whether context-level routes reach pages Stagehand and
-Browser-Use open over CDP — faults are installed on the browser context
-precisely so they should, and it holds for the `scripted` adapter, but it needs
-confirming.
+**Browser-Use verified live**, through OpenRouter, against a real cloud
+browser — and it settled the open question about fault routing:
+
+> `loginWall — served wall on navigation #2` at `/catalog.html`
+
+That navigation was performed by **Browser-Use**, not by the harness. So
+context-level interception does reach pages an agent drives over CDP, which is
+what makes the comparison between adapters fair. The agent's own recorded
+reaction is the interesting part:
+
+```
+0 goto /index.html      (harness)
+1 act: click            → hit the injected wall
+2 act: go_back
+3 act: click            → through
+4 act: done             → all 8 items, 3/3 assertions
+```
+
+No recovery script was involved. It improvised, and the harness caught it.
+
+**Stagehand is written but unrun**: it requires Node ≥22.18.0, and npm silently
+skips it as an optional dependency on anything older.
 
 ## What the live run taught us
 
